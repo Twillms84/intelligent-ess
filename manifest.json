@@ -1,0 +1,10 @@
+{
+  "domain": "intelligent_ess",
+  "name": "Open Intelligent ESS",
+  "documentation": "https://github.com/twillms84/tibber_smart_battery",
+  "dependencies": ["tibber", "sun"],
+  "codeowners": ["@twillms"],
+  "version": "1.0.0",
+  "iot_class": "local_calculation",
+  "config_flow": true
+}

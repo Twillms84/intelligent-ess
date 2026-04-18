@@ -1,0 +1,38 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Intelligent ESS Konfiguration",
+                "data": {
+                    "pv_production_sensor": "PV Produktion (kWh)",
+                    "grid_consumption_sensor": "Netzbezug (kWh)",
+                    "grid_export_sensor": "Netzeinspeisung (kWh)",
+                    "bat_charge_sensor": "Batterie Ladung (kWh)",
+                    "bat_discharge_sensor": "Batterie Entladung (kWh)",
+                    "battery_capacity": "Batterie Kapazität (kWh)",
+                    "battery_charge_switch": "Schalter für Netzlade-Modus",
+                    "min_soc_reserve": "Min. SOC Reserve (%)",
+                    "price_delta_threshold": "Preis-Differenz Sperre (ct)",
+                    "charge_delta_threshold": "Preis-Differenz Laden (ct)",
+                    "sun_yield_threshold": "Solar-Schwelle (kWh)",
+                    "safety_buffer": "Sicherheitsfaktor (1.1 - 1.5)",
+                    "default_usage": "Hausverbrauch Standard (kW)",
+                    "tibber_price_sensor": "Aktueller Strompreis Sensor",
+                    "tibber_export_sensor": "Tibber Preise Attribut Sensor",
+                    "battery_soc_sensor": "Batterie SOC (%)",
+                    "solar_forecast_sensor": "Solar Prognose Sensor",
+                    "wr_limit_entity": "Wechselrichter Limit Entität",
+                    "wr_lock_value": "Limit-Wert für Sperre",
+                    "wr_unlock_value": "Limit-Wert für Normalbetrieb"
+                }
+            }
+        }
+    },
+    "entity": {
+        "sensor": {
+            "action": { "name": "Empfehlung" },
+            "curr_cons": { "name": "Aktueller Hausverbrauch" },
+            "rest_nacht": { "name": "Restbedarf Nacht" }
+        }
+    }
+}
