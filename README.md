@@ -1,62 +1,80 @@
 🧠 Intelligent ESS für Home Assistant
-Intelligent ESS (Energy Storage System) ist eine smarte, vorausschauende Home Assistant Integration, die das Management von Heimspeichern (Batterien) revolutioniert. Anstatt den Akku einfach "dumm" zu laden, wenn die Sonne scheint, und zu entladen, sobald im Haus Strom gebraucht wird, trifft Intelligent ESS strategische Entscheidungen basierend auf dynamischen Strompreisen (z. B. Tibber), dem individuellen Verbrauchsverhalten und vorausschauenden Prognosen.
+Intelligent ESS (Energy Storage System) ist eine smarte, vorausschauende Home Assistant Integration, die das Management von Heimspeichern (Batterien) revolutioniert. Anstatt den Akku einfach "dumm" zu laden, wenn die Sonne scheint, und zu entladen, sobald im Haus Strom gebraucht wird, trifft Intelligent ESS strategische Entscheidungen basierend auf dynamischen Strompreisen, dem individuellen Verbrauchsverhalten und vorausschauenden Prognosen.
 
 Das Ziel: Maximale Autarkie, optimale Ausnutzung von Preisschwankungen und absolute finanzielle Transparenz.
 
-🌟 Was leistet das Projekt? (Core Features)
+🌟 Hauptmerkmale (Core Features)
 1. Selbstlernendes Verbrauchsprofil (Smart Learning)
-Das System verlässt sich nicht auf statische Schätzwerte. Es lernt im 15-Minuten-Takt das reale Verbrauchsverhalten des Haushalts (Wochentag- und stundengenau).
+Das System verlässt sich nicht auf statische Schätzwerte. Es lernt im 15-Minuten-Takt das reale Verbrauchsverhalten des Haushalts (wochentag- und stundengenau).
 
-Der Forecast: Das System berechnet kontinuierlich den exakten Restbedarf bis zum nächsten Morgen (08:00 Uhr), wenn die PV-Anlage voraussichtlich wieder genug Energie liefert.
+Der Forecast: Kontinuierliche Berechnung des exakten Restbedarfs bis zum nächsten Morgen (ca. 08:00 Uhr).
 
-Nachtreserve: Es wird automatisch ein Sicherheitspuffer (z. B. 20 %) eingeplant, damit der Akku morgens für die Kaffeemaschine nicht leer ist.
+Nachtreserve: Automatische Einplanung eines Sicherheitspuffers (z. B. 20 %), damit die Grundlast (z. B. Kaffeemaschine am Morgen) gesichert ist.
 
 2. Smart Charging (Arbitrage-Laden)
-Wenn in den Wintermonaten oder bei schlechtem Wetter absehbar ist, dass die Batteriekapazität nicht bis zum nächsten Morgen reicht, wird der Akku aktiv aus dem Netz geladen – aber nur dann, wenn der Strompreis am günstigsten ist.
+Wenn absehbar ist, dass die PV-Energie nicht bis zum nächsten Morgen reicht (z. B. im Winter), wird der Akku aktiv aus dem Netz geladen – aber nur dann, wenn der Strompreis am günstigsten ist. Das System sucht automatisch die Preis-Tiefpunkte der Nacht.
 
-Das System sucht sich die absoluten Preis-Tiefpunkte in der Nacht, um den fehlenden Restbedarf aufzufüllen.
-
-3. Smart Hold (Peak Shaving & Batterie-Schonung)
-Strom ist oft mittags und nachts günstig, aber morgens und in den frühen Abendstunden teuer (Peak-Zeiten).
-
-Wenn der aktuelle Netzstrom extrem günstig ist (z. B. durch viel Windstrom im Netz), stoppt das System die Batterieentladung (Action: HOLD). Das Haus wird kurzzeitig günstig aus dem Netz versorgt, während die wertvolle Batteriekapazität für die teuren Peak-Stunden am Abend oder Morgen "aufgehoben" wird.
+3. Smart Hold (Peak Shaving & Batterieschonung)
+Wenn der aktuelle Netzstrom extrem günstig ist (z. B. bei viel Windkraft im Netz), stoppt das System die Batterieentladung (HOLD). Das Haus wird kurzzeitig günstig aus dem Netz versorgt, während die wertvolle Batteriekapazität für die teuren Peak-Stunden am Morgen oder Abend reserviert bleibt.
 
 4. Transparente Finanz-Analyse (Die 4 Spar-Töpfe)
-Im Gegensatz zu Standard-Systemen, die nur eine pauschale "Ersparnis" anzeigen, schlüsselt Intelligent ESS den wirtschaftlichen Erfolg in Echtzeit in vier separate Sensoren auf:
+Echtzeit-Aufschlüsselung des wirtschaftlichen Erfolgs durch vier separate Sensoren:
 
-Solar-Ersparnis: Geld, das durch direkten PV-Eigenverbrauch gespart wurde.
+Solar-Ersparnis: Geld gespart durch direkten PV-Eigenverbrauch.
 
-Hold-Ersparnis: Geld, das gespart wurde, weil günstiger Netzstrom genutzt und die Batterie für teure Stunden zurückgehalten wurde.
+Hold-Ersparnis: Gewinn durch Nutzung günstigen Netzstroms bei gleichzeitiger Reservierung der Batterie für teure Stunden.
 
-Load-Ersparnis: Gewinn (Arbitrage) durch das gezielte Beladen des Akkus zu Tiefstpreisen.
+Load-Ersparnis: Arbitrage-Gewinn durch gezieltes Beladen des Akkus zu Tiefstpreisen.
 
-Gesamt-Ersparnis: Die Summe aus allen smarten Entscheidungen und dem PV-Ertrag.
+Gesamt-Ersparnis: Die Summe aller smarten Entscheidungen.
 
-⚙️ Wie funktioniert es unter der Haube?
-Die Integration arbeitet minütlich als "Schaltzentrale" (Coordinator) in Home Assistant:
+📋 Voraussetzungen (Prerequisites)
+Damit Intelligent ESS seine volle Wirkung entfalten kann, müssen folgende Voraussetzungen in Home Assistant erfüllt sein:
 
-Daten-Sammeln: Es liest PV-Erzeugung, Netzbezug, Netzeinspeisung sowie Batterieladung/-entladung und berechnet daraus den echten Hausverbrauch.
+Dynamische Strompreise: Du benötigst eine Integration, die aktuelle Strompreise liefert (z. B. Tibber, Awattar oder ähnliche).
 
-Prognose erstellen: Die Logic-Engine gleicht den aktuellen Batteriestand mit dem gelernten Restbedarf der kommenden Nacht ab.
+Preis-Prognose: Die Preis-Integration muss eine Liste der Forecast-Preise (mindestens für die nächsten 12-24 Stunden) bereitstellen.
 
-Preise auswerten: Die aktuellen und zukünftigen Tibber-Preise werden gescannt.
+Schreibzugriff auf den Wechselrichter: Dein Wechselrichter/Speicher-System muss über Home Assistant steuerbar sein (z. B. über Modbus, MQTT oder herstellerspezifische Integrationen), um Befehle zum Laden, Entladen oder Halten (Hold) empfangen zu können.
 
-Entscheidung treffen (Der Fahrplan): Die Integration gibt eine Handlungsanweisung (LADEN, HOLD oder NORMAL) an den Wechselrichter aus, der den Speicher entsprechend steuert.
+🔌 Kompatibilität
+Intelligent ESS ist herstellerunabhängig konzipiert. Es funktioniert "Out of the box" mit jedem Speicher-System, das als Entität in Home Assistant eingebunden ist, sofern:
 
-📊 Verfügbare Sensoren im Home Assistant Dashboard
-Mit der Installation erhältst du ein "Intelligent ESS" Gerät in Home Assistant mit folgenden Echtzeit-Werten:
+Die aktuelle Batterieladung (SOC in % oder kWh) ausgelesen werden kann.
 
-Aktion: Was tut das System gerade und warum? (z.B. "HOLD - Strom ist aktuell günstig, bewahre Akku für Morgen-Peak auf").
+Die Lade- und Entladelogik über Home Assistant Schalter oder Nummern-Entitäten (Registers) gesteuert werden kann.
 
-Fahrplan: Zeigt den berechneten Bedarf vs. die aktuelle Strategie.
+🚀 Installation
+Über HACS (Empfohlen)
+Öffne HACS in deinem Home Assistant.
 
-Hausverbrauch (kW): Bereinigter Echtzeit-Verbrauch des Hauses.
+Klicke auf die drei Punkte oben rechts und wähle Benutzerdefinierte Repositories.
 
-Restbedarf (kWh): Exakt berechnete Energie, die bis morgen früh noch benötigt wird.
+Füge die URL dieses Git-Repositories hinzu und wähle als Kategorie Integration.
 
-Forecast Verbrauch (kWh): Erwarteter Verbrauch der nächsten Stunde (inkl. stündlicher Prognose bis zum Morgen als Attribut).
+Suche nach Intelligent ESS und klicke auf Installieren.
 
-Finanz-Sensoren (€): Alle vier Ersparnis-Töpfe zur Überwachung der Rentabilität.
+Starte Home Assistant neu.
+
+Manuelle Installation
+Lade dieses Repository herunter.
+
+Kopiere den Ordner custom_components/intelligent_ess in deinen custom_components-Ordner in Home Assistant.
+
+Starte Home Assistant neu.
+
+📊 Dashboard & Sensoren
+Nach der Installation stehen dir unter anderem folgende Sensoren zur Verfügung:
+
+Aktion: Aktueller Status (z. B. LADEN, HOLD, NORMAL).
+
+Fahrplan: Vergleich von berechnetem Bedarf vs. Strategie.
+
+Restbedarf (kWh): Exakte Prognose der benötigten Energie bis zum nächsten Sonnenaufgang.
+
+Finanz-Sensoren (€): Überwachung der Rentabilität in Echtzeit.
+
+(Screenshots folgen in Kürze)
 
 🎯 Für wen ist dieses Projekt?
-Für alle Besitzer einer Photovoltaikanlage mit Heimspeicher, die einen dynamischen Stromtarif (wie Tibber) nutzen und die Kontrolle über ihr Energiemanagement nicht einer undurchsichtigen Cloud überlassen wollen, sondern lokal, datenschutzkonform und maximal effizient im eigenen Home Assistant regeln möchten.
+Für alle Besitzer einer Photovoltaikanlage mit Heimspeicher, die einen dynamischen Stromtarif nutzen und die Kontrolle über ihr Energiemanagement nicht einer undurchsichtigen Cloud überlassen wollen, sondern lokal, datenschutzkonform und maximal effizient im eigenen Home Assistant regeln möchten.
