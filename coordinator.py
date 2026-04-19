@@ -25,22 +25,22 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self.profile_path = hass.config.path("intelligent_ess_profiles.json")
         self.savings_path = hass.config.path("intelligent_ess_savings.json")
         
-        # Initialisierung der Datenstruktur mit den 4 Spar-Töpfen
+        # Initialisierung der Datenstruktur mit den aktualisierten Forecast-Schlüsseln
         self.data = {
             "house_kw": 0.0,
             "net_watt": 0.0,
             "strat": "NORMAL",
             "strat_msg": "Initialisierung...",
-            "rest_night": 0.0,
+            "rest_demand_daily": 0.0,        # NEU: Ersetzt rest_night
+            "forecast_current_hour": 0.0,    # NEU: Herunterlaufender Wert aktuelle Stunde
+            "forecast_next_hour": 0.0,
             "morning_reserve": 0.0,
             "fahrplan": "Warte auf Daten...",
-            "forecast_next_hour": 0.0,
-            "forecast_details": {},
             "savings": {
                 "total": 0.0, 
-                "solar": 0.0,   # 1. Solarersparnis
-                "hold": 0.0,    # 2. Smartholdersparnis
-                "load": 0.0     # 3. Smartloadersparnis
+                "solar": 0.0,
+                "hold": 0.0,
+                "load": 0.0
             },
             "samples": []
         }
@@ -63,11 +63,13 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         config = {**self.entry.data, **self.entry.options}
         current = self._get_raw_states(config)
         
-        if not current: return self.data
+        if not current: 
+            return self.data
 
         if self.last_readings:
             deltas = {k: current[k] - self.last_readings[k] for k in current if k in self.last_readings}
             
+            # Ausreißer ignorieren
             if any(v < -0.001 or v > 1.2 for v in deltas.values()):
                 self.last_readings = current
                 return self.data
@@ -76,19 +78,24 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             house_kwh = max(0, deltas["pv"] + deltas["grid_in"] + deltas["bat_dis"] - deltas["grid_out"] - deltas["bat_chg"])
             self.data["house_kw"] = round(house_kwh * 60, 3)
             self.data["net_watt"] = round((deltas["grid_in"] - deltas["grid_out"]) * 60000, 0)
+            
+            # Sample hinzufügen
             self.data["samples"].append(house_kwh)
 
-            # Finanz-Update (Neu mit 4 Töpfen)
+            # Finanz-Update
             self._update_finances(config, deltas, house_kwh)
 
             # Logik-Check (Forecast & Strategie)
             await self._run_logic_cycle(config, current)
 
-            # Smart Learning & Save
+            # Smart Learning & Save (Trigger über Menge, nicht über Zeit!)
             now = dt_util.now()
-            if now.minute in [0, 15, 30, 45] and self.data["samples"]:
+            if len(self.data["samples"]) >= 15:
                 samples_to_save = list(self.data["samples"])
                 self.data["samples"] = []
+                
+                _LOGGER.debug("Speichere %s Samples ins Profil", len(samples_to_save))
+                
                 await self.hass.async_add_executor_job(
                     ProfileManager.update_profile, self.profile_path, now, samples_to_save, config
                 )
@@ -108,19 +115,36 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             p_state = self.hass.states.get(config.get("tibber_price_sensor", ""))
             prices = p_state.attributes.get("data", []) if p_state else []
 
-            # Detaillierter Forecast (Fenster bis morgen früh wird im ProfileManager berechnet)
-            detailed_data = await self.hass.async_add_executor_job(
-                ProfileManager.get_detailed_forecast, self.profile_path, now
+            # --- NEU: Detaillierter Forecast über die neuen Funktionen ---
+            # 1. Täglicher Restbedarf
+            rest_daily = await self.hass.async_add_executor_job(
+                ProfileManager.get_daily_rest_demand, self.profile_path, now
             )
-            self.data["forecast_next_hour"] = detailed_data["next_hour"]
-            self.data["forecast_details"] = detailed_data["hourly_details"]
-            self.data["rest_night"] = round(sum(detailed_data["hourly_details"].values()), 2)
-            
-            self.data["morning_reserve"] = round(self.data["rest_night"] * 0.2, 2)
+            self.data["rest_demand_daily"] = rest_daily
+            self.data["morning_reserve"] = round(rest_daily * 0.2, 2)
+
+            # 2. Stunden-Forecasts (Aktuell und Nächste)
+            cur_rem, next_full = await self.hass.async_add_executor_job(
+                ProfileManager.get_hour_forecasts, self.profile_path, now
+            )
+            self.data["forecast_current_hour"] = cur_rem
+            self.data["forecast_next_hour"] = next_full
+            # -------------------------------------------------------------
+
+            # Solar-Prognose abrufen
+            solar_fc = 0.0
+            solar_fc_entity_id = config.get("solar_forecast_sensor", "")
+            if solar_fc_entity_id:
+                fc_state = self.hass.states.get(solar_fc_entity_id)
+                if fc_state and fc_state.state not in ['unknown', 'unavailable', 'none']:
+                    try:
+                        solar_fc = float(fc_state.state) 
+                    except ValueError:
+                        pass
 
             # Strategie-Entscheidung
             should_charge, c_msg = SmartCharging.calculate_charge_strategy(
-                config, soc, kwh_now, self.data["rest_night"], 0.0, prices
+                config, soc, kwh_now, rest_daily, solar_fc, prices
             )
             
             if should_charge:
@@ -131,7 +155,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 )
                 self.data["strat"], self.data["strat_msg"] = strat, d_msg
 
-            self.data["fahrplan"] = f"Bedarf: {self.data['rest_night']}kWh | {self.data['strat']}"
+            self.data["fahrplan"] = f"Bedarf heute: {rest_daily}kWh | {self.data['strat']}"
         except Exception as e:
             _LOGGER.error("Fehler im Logik-Zyklus: %s", e)
 
@@ -139,30 +163,32 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         """Berechnet Ersparnisse getrennt nach Solar, Hold und Load."""
         try:
             p_state = self.hass.states.get(config.get("tibber_price_sensor", ""))
-            cur_p = float(p_state.state) if p_state and p_state.state not in ['unknown', 'unavailable'] else 0.3
+            cur_p = float(p_state.state) if p_state and p_state.state not in ['unknown', 'unavailable'] else 0.30
+            prices = p_state.attributes.get("data", []) if p_state else []
             fin = self.data["savings"]
 
             # 1. Solarersparnis (PV Eigenverbrauch)
-            # Was wir direkt verbraucht haben, ohne es aus dem Netz zu ziehen
-            solar_kwh = max(0, house_kwh - deltas["grid_in"] - deltas["bat_dis"])
-            fin["solar"] += (solar_kwh * cur_p)
+            eigenverbrauch_kwh = max(0, house_kwh - deltas["grid_in"])
+            fin["solar"] += (eigenverbrauch_kwh * cur_p)
 
             # 2. Smartholdersparnis (Verhinderter teurer Netzbezug)
             if self.data["strat"] == "HOLD":
-                # Wir schätzen die Ersparnis durch das Verschieben auf die Peak-Stunde
-                # Wir nehmen konservativ eine Differenz von 10 Cent an oder berechnen sie
-                fin["hold"] += (house_kwh * 0.10) 
+                future_prices = [p.get('price_per_kwh', p.get('price', cur_p)) for p in prices[1:13]]
+                max_future_p = max(future_prices) if future_prices else cur_p
+                hold_diff = max(0, max_future_p - cur_p)
+                fin["hold"] += (house_kwh * hold_diff)
 
             # 3. Smartloadersparnis (Arbitrage durch Billigstrom)
             if self.data["strat"] == "LADEN":
-                avg_day_price = 0.30 
-                diff = max(0, avg_day_price - cur_p)
-                fin["load"] += (deltas["bat_chg"] * diff)
+                day_prices = [p.get('price_per_kwh', p.get('price', cur_p)) for p in prices[:24]]
+                avg_day_price = sum(day_prices) / len(day_prices) if day_prices else 0.30
+                load_diff = max(0, avg_day_price - cur_p)
+                fin["load"] += (deltas["bat_chg"] * load_diff)
 
             # 4. Summe
             fin["total"] = fin["solar"] + fin["hold"] + fin["load"]
-        except:
-            pass
+        except Exception as e:
+            _LOGGER.error("Fehler beim Finanz-Update: %s", e)
 
     def _save_savings_to_disk(self):
         try:
@@ -174,6 +200,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         try:
             pv_ids = config.get("pv_production_sensor", [])
             if isinstance(pv_ids, str): pv_ids = [pv_ids]
+            
             return {
                 "pv": sum(float(self.hass.states.get(i).state) for i in pv_ids if self._is_valid(i)),
                 "grid_in": float(self.hass.states.get(config.get("grid_consumption_sensor")).state),
@@ -182,7 +209,15 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 "bat_dis": float(self.hass.states.get(config.get("bat_discharge_sensor")).state),
                 "bat_soc": float(self.hass.states.get(config.get("battery_soc_sensor")).state)
             }
-        except: return None
+        except AttributeError as ae:
+            _LOGGER.error("Ein Sensor fehlt oder wurde umbenannt! %s", ae)
+            return None
+        except ValueError as ve:
+            _LOGGER.error("Ein Sensor liefert keine Zahl (evtl. unavailable)! %s", ve)
+            return None
+        except Exception as e:
+            _LOGGER.error("Allgemeiner Fehler bei Sensorabfrage: %s", e)
+            return None
 
     def _is_valid(self, eid):
         if not eid: return False

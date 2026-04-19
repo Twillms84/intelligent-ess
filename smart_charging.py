@@ -9,17 +9,23 @@ class SmartCharging:
         if not prices:
             return False, "Keine Preisdaten vorhanden."
 
-        cur_p = prices[0]['price_per_kwh']
+        # Fehlertolerantes Auslesen
+        cur_p = prices[0].get('price_per_kwh', prices[0].get('price', 0.30))
         
         # 1. Analyse der günstigsten Stunden im 24h Fenster
-        sorted_prices = sorted([p['price_per_kwh'] for p in prices[:24]])
-        # Wir definieren 'günstig' als die untersten 20% der verfügbaren Preise
+        future_prices = [p.get('price_per_kwh', p.get('price', cur_p)) for p in prices[:24]]
+        if not future_prices:
+            return False, "Keine Zukunftspreise für Analyse vorhanden."
+
+        sorted_prices = sorted(future_prices)
+        
+        # Wir definieren 'günstig' als die untersten 20% der verfügbaren Preise (max. Index 4)
         cheap_threshold = sorted_prices[min(len(sorted_prices)-1, 4)] 
         
-        is_cheap_now = cur_p <= (cheap_threshold * 1.05) # Kleiner Puffer
+        # Absoluter Puffer von 0.5 Cent (0.005 €), um das Problem mit negativen Preisen zu umgehen
+        is_cheap_now = cur_p <= (cheap_threshold + 0.005)
 
         # 2. Defizit-Check: Reicht das, was wir haben + was die Sonne bringt?
-        # Wir addieren Akku-Inhalt und Solar-Prognose
         expected_energy = kwh_now + solar_forecast
         deficit = rest_demand_24h - expected_energy
 

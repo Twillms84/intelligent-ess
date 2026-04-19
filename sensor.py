@@ -12,12 +12,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         IntelligentESSActionSensor(coordinator),
         IntelligentESSConsumptionSensor(coordinator),
-        IntelligentESSGenericSensor(coordinator, "Restbedarf", "rest_night", "kWh"),
+        
+        # Geändert: Nutzt jetzt den neuen Key 'rest_demand_daily'
+        IntelligentESSGenericSensor(coordinator, "Restbedarf Heute", "rest_demand_daily", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Nachtreserve", "morning_reserve", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Fahrplan", "fahrplan", None),
-        IntelligentESSForecastSensor(coordinator),
         
-        # Die 4 neuen Spar-Sensoren
+        # Die aufgeteilten Forecast-Sensoren
+        IntelligentESSForecastSensorCurrent(coordinator),
+        IntelligentESSForecastSensorNext(coordinator),
+        
+        # Die 4 Spar-Sensoren
         IntelligentESSSavingsSensor(coordinator, "Solar-Ersparnis", "solar"),
         IntelligentESSSavingsSensor(coordinator, "Hold-Ersparnis", "hold"),
         IntelligentESSSavingsSensor(coordinator, "Load-Ersparnis", "load"),
@@ -95,23 +100,31 @@ class IntelligentESSSavingsSensor(IntelligentESSBase):
         savings_dict = self.coordinator.data.get("savings", {})
         return round(float(savings_dict.get(self._key, 0.0)), 2)
 
-class IntelligentESSForecastSensor(IntelligentESSBase):
-    """Sensor für die Verbrauchsprognose mit stündlichen Details."""
+
+# --- NEU: Aufgeteilte Forecast-Sensoren ---
+
+class IntelligentESSForecastSensorCurrent(IntelligentESSBase):
+    """Sensor für die Verbrauchsprognose der aktuellen (herunterlaufenden) Stunde."""
     def __init__(self, coordinator):
         super().__init__(coordinator)
-        self._attr_name = "Intelligent ESS Forecast Verbrauch"
-        self._attr_unique_id = f"{coordinator.entry.entry_id}_forecast_v"
+        self._attr_name = "Intelligent ESS Forecast Aktuelle Stunde"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_forecast_current_hour"
         self._attr_native_unit_of_measurement = "kWh"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self):
-        # Zeigt den Verbrauch der nächsten Stunde
-        return self.coordinator.data.get("forecast_next_hour", 0.0)
+        return self.coordinator.data.get("forecast_current_hour", 0.0)
+
+class IntelligentESSForecastSensorNext(IntelligentESSBase):
+    """Sensor für die Verbrauchsprognose der nächsten vollen Stunde."""
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Intelligent ESS Forecast Nächste Stunde"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_forecast_next_hour"
+        self._attr_native_unit_of_measurement = "kWh"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
-    def extra_state_attributes(self):
-        # Liefert die Details bis zum Zielzeitpunkt (morgens) in die Attribute
-        return {
-            "stündliche_prognose": self.coordinator.data.get("forecast_details", {}),
-            "bereitstellung": "Profile Learning"
-        }
+    def native_value(self):
+        return self.coordinator.data.get("forecast_next_hour", 0.0)
