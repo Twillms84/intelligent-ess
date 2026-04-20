@@ -44,7 +44,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             },
             "samples": []
         }
-        self._load_savings()
+        self._savings_loaded = False
 
     def _load_savings(self):
         """Lädt Ersparnisse beim Start."""
@@ -60,6 +60,11 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 _LOGGER.error("Fehler beim Laden der Ersparnisse: %s", e)
 
     async def _async_update_data(self):
+        
+        if not self._savings_loaded:
+            await self.hass.async_add_executor_job(self._load_savings)
+            self._savings_loaded = True
+        
         config = {**self.entry.data, **self.entry.options}
         current = self._get_raw_states(config)
         
@@ -112,24 +117,40 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             min_soc = float(config.get("min_soc_reserve", 10.0))
             kwh_now = max(0, (cap * (soc - min_soc)) / 100)
             
-            p_state = self.hass.states.get(config.get("tibber_price_sensor", ""))
-            prices = p_state.attributes.get("data", []) if p_state else []
+            # --- TIBBER PREIS DATA FIX ---
+            price_entity = config.get("tibber_export_sensor")
+            self.data["prices_raw"] = []
+            
+            if price_entity:
+                p_state = self.hass.states.get(price_entity)
+                if p_state:
+                    prices_list = p_state.attributes.get("data", [])
+                    if isinstance(prices_list, list) and len(prices_list) > 0:
+                        self.data["prices_raw"] = prices_list
+                        _LOGGER.info("COORDINATOR: %s Preis-Slots aus %s geladen.", len(prices_list), price_entity)
+                    else:
+                        _LOGGER.warning("COORDINATOR: Attribut 'data' in %s ist leer!", price_entity)
+            
+            prices = self.data["prices_raw"]
 
-            # --- NEU: Detaillierter Forecast über die neuen Funktionen ---
-            # 1. Täglicher Restbedarf
+            # --- RESTLICHE LOGIK ---
+            options = self.config_entry.options
+            entry_data = self.config_entry.data
+            fallback_hourly = float(options.get("default_usage", entry_data.get("default_usage", 0.6)))
+
+            # 1. Täglicher Restbedarf (rollierend 24h)
             rest_daily = await self.hass.async_add_executor_job(
-                ProfileManager.get_daily_rest_demand, self.profile_path, now
+                ProfileManager.get_daily_rest_demand, self.profile_path, now, fallback_hourly
             )
-            self.data["rest_demand_daily"] = rest_daily
+            self.data["rest_demand_daily"] = round(rest_daily, 2)
             self.data["morning_reserve"] = round(rest_daily * 0.2, 2)
 
-            # 2. Stunden-Forecasts (Aktuell und Nächste)
+            # 2. Stunden-Forecasts
             cur_rem, next_full = await self.hass.async_add_executor_job(
-                ProfileManager.get_hour_forecasts, self.profile_path, now
+                ProfileManager.get_hour_forecasts, self.profile_path, now, fallback_hourly
             )
-            self.data["forecast_current_hour"] = cur_rem
-            self.data["forecast_next_hour"] = next_full
-            # -------------------------------------------------------------
+            self.data["forecast_current_hour"] = round(cur_rem, 2)
+            self.data["forecast_next_hour"] = round(next_full, 2)
 
             # Solar-Prognose abrufen
             solar_fc = 0.0
@@ -139,10 +160,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 if fc_state and fc_state.state not in ['unknown', 'unavailable', 'none']:
                     try:
                         solar_fc = float(fc_state.state) 
-                    except ValueError:
-                        pass
+                    except ValueError: pass
 
-            # Strategie-Entscheidung
+            # Strategie-Entscheidung (Interne Logik)
             should_charge, c_msg = SmartCharging.calculate_charge_strategy(
                 config, soc, kwh_now, rest_daily, solar_fc, prices
             )
@@ -155,7 +175,40 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 )
                 self.data["strat"], self.data["strat_msg"] = strat, d_msg
 
-            self.data["fahrplan"] = f"Bedarf heute: {rest_daily}kWh | {self.data['strat']}"
+            self.data["fahrplan"] = f"Bedarf 24h: {self.data['rest_demand_daily']}kWh | PV: {round(solar_fc,1)}kWh"
+
+            # --- AUTOMATISCHE KI-AUSFÜHRUNG ---
+            ki_decision = self.data.get("ki_charge_decision", "NO")
+            ki_start_time = self.data.get("ki_charge_start", "00:00")
+            
+            # 1. Prüfen, ob der Nutzer die Automatik erlaubt hat
+            # Erstelle in HA einen 'input_boolean.intelligent_ess_automatik'
+            auto_allowed = self.hass.states.get("input_boolean.intelligent_ess_automatik")
+            is_auto_on = auto_allowed and auto_allowed.state == "on"
+
+            if ki_decision == "YES" and is_auto_on:
+                current_time = now.strftime("%H:%M")
+                
+                # Vergleich: Ist es Zeit zu laden?
+                if current_time == ki_start_time:
+                    charge_switch = config.get("battery_charge_switch")
+                    if charge_switch:
+                        _LOGGER.warning("AUTOPILOT AKTIV: %s", self.data.get("ki_reason", "KI-Entscheidung"))
+                        await self.hass.services.async_call("switch", "turn_on", {"entity_id": charge_switch})
+            # Automatischer Stopp bei vollem Akku
+            if soc >= 95 and charge_switch:
+                s_state = self.hass.states.get(charge_switch)
+                if s_state and s_state.state == "on":
+                    _LOGGER.info("KI-AUTOPILOT: Akku voll (%s%%), schalte Laden aus.", soc)
+                    await self.hass.services.async_call("switch", "turn_off", {"entity_id": charge_switch})
+
+            # --- AUTOMATISCHER KI-TRIGGER (Jeden Tag um 14:05 Uhr) ---
+            if now.hour == 14 and now.minute == 5:
+                # Wir lösen den Button-Press-Service aus
+                button_entity = f"button.{self.config_entry.entry_id}_ki_button"
+                _LOGGER.info("KI-AUTOPILOT: Trigger tägliche Analyse via %s", button_entity)
+                await self.hass.services.async_call("button", "press", {"entity_id": button_entity})
+
         except Exception as e:
             _LOGGER.error("Fehler im Logik-Zyklus: %s", e)
 
@@ -198,23 +251,29 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
     def _get_raw_states(self, config):
         try:
+            # Hilfsfunktion zum sicheren Auslesen
+            def safe_float(entity_id):
+                if not entity_id:
+                    return 0.0
+                state_obj = self.hass.states.get(entity_id)
+                if state_obj and state_obj.state not in ['unknown', 'unavailable', 'none']:
+                    try:
+                        return float(state_obj.state)
+                    except ValueError:
+                        return 0.0
+                return 0.0
+
             pv_ids = config.get("pv_production_sensor", [])
             if isinstance(pv_ids, str): pv_ids = [pv_ids]
             
             return {
-                "pv": sum(float(self.hass.states.get(i).state) for i in pv_ids if self._is_valid(i)),
-                "grid_in": float(self.hass.states.get(config.get("grid_consumption_sensor")).state),
-                "grid_out": float(self.hass.states.get(config.get("grid_export_sensor")).state),
-                "bat_chg": float(self.hass.states.get(config.get("bat_charge_sensor")).state),
-                "bat_dis": float(self.hass.states.get(config.get("bat_discharge_sensor")).state),
-                "bat_soc": float(self.hass.states.get(config.get("battery_soc_sensor")).state)
+                "pv": sum(safe_float(i) for i in pv_ids),
+                "grid_in": safe_float(config.get("grid_consumption_sensor")),
+                "grid_out": safe_float(config.get("grid_export_sensor")),
+                "bat_chg": safe_float(config.get("bat_charge_sensor")),
+                "bat_dis": safe_float(config.get("bat_discharge_sensor")),
+                "bat_soc": safe_float(config.get("battery_soc_sensor"))
             }
-        except AttributeError as ae:
-            _LOGGER.error("Ein Sensor fehlt oder wurde umbenannt! %s", ae)
-            return None
-        except ValueError as ve:
-            _LOGGER.error("Ein Sensor liefert keine Zahl (evtl. unavailable)! %s", ve)
-            return None
         except Exception as e:
             _LOGGER.error("Allgemeiner Fehler bei Sensorabfrage: %s", e)
             return None

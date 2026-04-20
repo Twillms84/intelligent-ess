@@ -7,7 +7,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 # WICHTIG: Stelle sicher, dass "sensor" in dieser Liste steht!
-PLATFORMS = ["sensor", "number", "switch"]
+PLATFORMS = ["sensor", "number", "switch", "button"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Setzt die Integration über die UI auf."""

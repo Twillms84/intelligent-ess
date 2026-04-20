@@ -4,12 +4,23 @@ from .const import DOMAIN
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
+        # Deine bisherigen Entities
         IntelligentESSNumber(entry, "safety_buffer", "Sicherheitsfaktor", 1.0, 2.0, 0.05, "multiplier"),
         IntelligentESSNumber(entry, "default_usage", "Standardverbrauch", 0.1, 5.0, 0.05, "kW"),
         IntelligentESSNumber(entry, "price_delta_threshold", "Preis-Differenz Limit", 0.0, 20.0, 0.5, "ct"),
         IntelligentESSNumber(entry, "min_soc_reserve", "Min. SOC (Nacht-Reserve)", 5.0, 50.0, 1.0, "%"),
-        IntelligentESSNumber(entry, "charge_delta_threshold", "Lade-Preisvorteil", 0.0, 15.0, 0.5, "ct"),
-        IntelligentESSNumber(entry, "solar_buy_threshold", "Solar-Kauf-Limit", 0.0, 30.0, 1.0, "kWh"),
+        
+        # NEU: Manuelle Lade-Slots (Start/Ende als Stunde)
+        IntelligentESSNumber(entry, "man_charge_s1_start", "Laden Slot 1 Start", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_charge_s1_end", "Laden Slot 1 Ende", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_charge_s2_start", "Laden Slot 2 Start", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_charge_s2_end", "Laden Slot 2 Ende", 0, 23, 1, "Uhr"),
+        
+        # NEU: Manuelle Entladesperre (Hold)
+        IntelligentESSNumber(entry, "man_hold_s1_start", "Sperre Slot 1 Start", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_hold_s1_end", "Sperre Slot 1 Ende", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_hold_s2_start", "Sperre Slot 2 Start", 0, 23, 1, "Uhr"),
+        IntelligentESSNumber(entry, "man_hold_s2_end", "Sperre Slot 2 Ende", 0, 23, 1, "Uhr"),
     ])
 
 class IntelligentESSNumber(NumberEntity):
