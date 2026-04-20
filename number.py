@@ -6,6 +6,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSNumber(entry, "safety_buffer", "Sicherheitsfaktor", 1.0, 2.0, 0.05, "multiplier"),
         IntelligentESSNumber(entry, "default_usage", "Standardverbrauch", 0.1, 5.0, 0.05, "kW"),
         IntelligentESSNumber(entry, "min_soc_reserve", "Min. SOC (Nacht-Reserve)", 5.0, 50.0, 1.0, "%"),
+        IntelligentESSNumber(entry, "price_delta_threshold", "Preis-Differenz Limit", 0.0, 20.0, 0.5, "ct"),
     ])
 
 class IntelligentESSNumber(NumberEntity):
@@ -23,6 +24,7 @@ class IntelligentESSNumber(NumberEntity):
 
     @property
     def native_value(self):
+        # Liest aus options, Fallback auf data
         return self._entry.options.get(self._key, self._entry.data.get(self._key))
 
     async def async_set_native_value(self, value):

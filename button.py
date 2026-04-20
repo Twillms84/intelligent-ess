@@ -31,8 +31,8 @@ class IntelligentESSKIButton(ButtonEntity):
         }
 
     async def async_press(self) -> None:
-        """KI-Analyse mit gezieltem Agent-Call und Datenextraktion."""
         _LOGGER.info("--- KI-STRATEGIE-CHECK START ---")
+        ki_text = "Analyse läuft..." # Vorab definieren!
         
         now = dt_util.now()
         now_time = now.strftime("%H:%M") # Hier wird now_time definiert!
@@ -95,41 +95,43 @@ class IntelligentESSKIButton(ButtonEntity):
         )
 
         try:
-            result = await self.hass.services.async_call("conversation", "process", 
+            result = await self.hass.services.async_call(
+                "conversation", "process", 
                 {"text": prompt, "agent_id": "conversation.google_ai_conversation_2"},
-                blocking=True, return_response=True)
+                blocking=True, return_response=True
+            )
             
             full_text = result["response"]["speech"]["plain"]["speech"]
+            
             if "RESULT:" in full_text:
+                ki_text = full_text.split("RESULT:")[0].strip()
                 data_str = full_text.split("RESULT:")[1].strip().replace("```json", "").replace("```", "")
                 cmd = json.loads(data_str)
                 
-                # Werte in manuelle Slots schreiben
                 new_opts = dict(self.entry.options)
                 if cmd.get("charge") == "YES":
-                    st_hour = int(cmd.get("start", "00:00").split(":")[0])
+                    # ZEIT-FORMAT FIX: Immer HH:MM:SS
+                    st_time = cmd.get("start", "00:00")
+                    if len(st_time) == 5: st_time += ":00"
+                    
+                    new_opts["man_charge_s1_start"] = st_time
+                    
+                    st_hour = int(st_time.split(":")[0])
                     dur = int(cmd.get("duration", 3))
-                    new_opts["man_charge_s1_start"] = st_hour
-                    new_opts["man_charge_s1_end"] = (st_hour + dur) % 24
+                    new_opts["man_charge_s1_end"] = f"{(st_hour + dur) % 24:02d}:00:00"
                     new_opts["man_charge_s1_enabled"] = True
                 
-                new_opts["ki_reason"] = cmd.get("reason", "KI Analyse")
+                new_opts["ki_reason"] = cmd.get("reason", "Strategie aktualisiert")
                 self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
+            else:
+                ki_text = full_text
 
         except Exception as e:
-            _LOGGER.error("KI-Button Fehler: %s", e)
+            _LOGGER.error("Fehler im KI-Button: %s", e)
+            ki_text = f"Fehler bei der Analyse: {str(e)}"
 
-        # Notification senden
+        # Notification senden (ki_text ist jetzt garantiert definiert)
         await self.hass.services.async_call(
             "persistent_notification", "create",
-            {
-                "title": "Intelligent ESS KI-Strategie",
-                "message": (
-                    f"🤖 {ki_text}\n\n"
-                    f"---\n"
-                    f"*Fahrplan: Netz-Laden {self.coordinator.data.get('ki_charge_decision', 'NO')} "
-                    f"um {self.coordinator.data.get('ki_charge_start', '00:00')}*"
-                ),
-                "notification_id": "ess_ki_recommendation"
-            }
+            {"title": "Intelligent ESS", "message": f"🤖 {ki_text}", "notification_id": "ess_ki"}
         )

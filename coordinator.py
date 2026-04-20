@@ -110,36 +110,26 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         return self.data
 
     async def _run_logic_cycle(self, config, current):
-        """Zentrale Steuerung: Prüft Slots und schaltet Entitäten."""
-        try:
-            now = dt_util.now()
-            now_hour = now.hour
-            now_min = now.minute
-            current_time_str = now.strftime("%H:%M")
+        from datetime import time as dt_time # Wichtig für Vergleich
+        
+        now = dt_util.now()
+        now_t = now.time() # Aktuelle Uhrzeit als Vergleichsobjekt
+        soc = current.get("bat_soc", 0)
+        
+        def is_in_slot(key_prefix):
+            enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
+            if not enabled: return False
             
-            soc = current.get("bat_soc", 0)
-            
-            # Entitäten aus der Config holen
-            charge_switch = config.get("battery_charge_switch")
-            hold_switch = config.get("battery_hold_switch")
-
-            # --- HILFSFUNKTION FÜR SLOT-PRÜFUNG ---
-            def is_in_slot(key_prefix):
-                enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
-                if not enabled: return False
+            try:
+                # ISO-Strings aus Options holen
+                start_t = dt_time.fromisoformat(self.config_entry.options.get(f"{key_prefix}_start", "00:00:00"))
+                end_t = dt_time.fromisoformat(self.config_entry.options.get(f"{key_prefix}_end", "00:00:00"))
                 
-                # ISO-Strings aus den Time-Entities laden
-                start_str = self.config_entry.options.get(f"{key_prefix}_start", "00:00:00")
-                end_str = self.config_entry.options.get(f"{key_prefix}_end", "00:00:00")
-                
-                start_t = time.fromisoformat(start_str)
-                end_t = time.fromisoformat(end_str)
-                now_t = now.time() # Aktuelle Uhrzeit als time-Objekt
-
                 if start_t <= end_t:
                     return start_t <= now_t < end_t
-                else: # Über Mitternacht
-                    return now_t >= start_t or now_t < end_t
+                return now_t >= start_t or now_t < end_t # Über Mitternacht
+            except:
+                return False
 
             # --- STRATEGIE ERMITTELN ---
             # Wir prüfen beide Slots für das Laden
