@@ -104,3 +104,38 @@ class ProfileManager:
             _LOGGER.debug("Profil-Update: %s Tag %s, %s:%s Uhr -> %s kWh/h", d, h, m, db[d][h][m])
         except Exception as e:
             _LOGGER.error("Fehler beim Profil-Update: %s", e)
+    
+    def _get_manual_slots(self, options):
+        """Extrahiert die Slots aus den neuen Time-Entities (Options)."""
+        slots = []
+        try:
+            # Wir prüfen die neuen Keys, die wir in time.py definiert haben
+            for i in [1, 2]:
+                enabled = options.get(f"man_charge_s{i}_enabled", False)
+                if enabled:
+                    start_str = options.get(f"man_charge_s{i}_start", "00:00:00")
+                    end_str = options.get(f"man_charge_s{i}_end", "00:00:00")
+                    
+                    # Umwandlung von ISO-String in Stunden-Dezimal für den Profiler
+                    st = dt_time.fromisoformat(start_str)
+                    en = dt_time.fromisoformat(end_str)
+                    
+                    # Umrechnung in Stunden-Dezimal (z.B. 02:30 -> 2.5) für die Matrix
+                    start_decimal = st.hour + st.minute / 60.0
+                    end_decimal = en.hour + en.minute / 60.0
+                    
+                    slots.append({"start": start_decimal, "end": end_decimal, "type": "charge"})
+            
+            # Dasselbe für Hold-Slots
+            if options.get("man_hold_s1_enabled", False):
+                h_start = dt_time.fromisoformat(options.get("man_hold_s1_start", "00:00:00"))
+                h_end = dt_time.fromisoformat(options.get("man_hold_s1_end", "00:00:00"))
+                slots.append({
+                    "start": h_start.hour + h_start.minute / 60.0,
+                    "end": h_end.hour + h_end.minute / 60.0,
+                    "type": "hold"
+                })
+        except Exception as e:
+            _LOGGER.error("Fehler beim Laden der manuellen Profile: %s", e)
+            
+        return slots

@@ -22,14 +22,13 @@ class IntelligentESSTime(TimeEntity):
 
     @property
     def native_value(self) -> time:
-        """Holt den gespeicherten String und wandelt ihn in ein Zeit-Objekt um."""
+        # Falls kein Wert vorhanden ist, nutzen wir Mitternacht als Default
         time_str = self._entry.options.get(self._key, "00:00:00")
         try:
             return time.fromisoformat(time_str)
-        except ValueError:
+        except (ValueError, TypeError):
             return time(0, 0)
 
     async def async_set_value(self, value: time) -> None:
-        """Speichert die gewählte Zeit als ISO-String in den Options."""
         new_opts = {**self._entry.options, self._key: value.isoformat()}
         self.hass.config_entries.async_update_entry(self._entry, options=new_opts)

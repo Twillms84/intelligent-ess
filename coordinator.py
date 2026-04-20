@@ -111,7 +111,8 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
     async def _run_logic_cycle(self, config, current):
         """Zentrale Steuerung basierend auf Zeit-Slots."""
-        from datetime import time as dt_time  # Wichtig für den Vergleich
+        # Wir importieren die richtige Klasse lokal, um Konflikte zu vermeiden
+        from datetime import time as dt_time 
         
         try:
             now = dt_util.now()
@@ -128,18 +129,20 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                     return False
                 
                 try:
-                    # Hole ISO-Zeitstrings (Format "HH:MM:SS")
+                    # Hole ISO-Zeitstrings aus den Options (Default 00:00:00)
                     start_str = self.config_entry.options.get(f"{key_prefix}_start", "00:00:00")
                     end_str = self.config_entry.options.get(f"{key_prefix}_end", "00:00:00")
                     
-                    # Umwandeln in Zeit-Objekte für den Vergleich
+                    # Umwandeln in datetime.time Objekte
                     start_t = dt_time.fromisoformat(start_str)
                     end_t = dt_time.fromisoformat(end_str)
                     
                     if start_t <= end_t:
+                        # Normaler Zeitraum (z.B. 08:00 - 16:00)
                         return start_t <= now_t < end_t
-                    # Fall: Über Mitternacht (z.B. 22:00 - 04:00)
-                    return now_t >= start_t or now_t < end_t
+                    else:
+                        # Zeitraum über Mitternacht (z.B. 22:00 - 06:00)
+                        return now_t >= start_t or now_t < end_t
                 except (ValueError, TypeError) as err:
                     _LOGGER.error("Zeitformat-Fehler in Slot %s: %s", key_prefix, err)
                     return False
@@ -152,23 +155,24 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             if soc >= 95:
                 should_charge = False
             if should_charge:
-                should_hold = False
+                should_hold = False # Laden sticht Entladesperre
 
-            # --- SCHALTVORGÄNGE ---
+            # --- SCHALTVORGÄNGE (mit State-Check zur API-Schonung) ---
             if charge_switch:
                 target = "turn_on" if should_charge else "turn_off"
-                # Nur schalten, wenn nötig (schont die API)
-                current_state = self.hass.states.get(charge_switch)
-                if current_state and current_state.state != ("on" if should_charge else "off"):
+                curr = self.hass.states.get(charge_switch)
+                if curr and curr.state != ("on" if should_charge else "off"):
+                    _LOGGER.info("Schalte Laden %s", target)
                     await self.hass.services.async_call("switch", target, {"entity_id": charge_switch})
 
             if hold_switch:
                 target = "turn_on" if should_hold else "turn_off"
-                current_state = self.hass.states.get(hold_switch)
-                if current_state and current_state.state != ("on" if should_hold else "off"):
+                curr = self.hass.states.get(hold_switch)
+                if curr and curr.state != ("on" if should_hold else "off"):
+                    _LOGGER.info("Schalte Entladesperre %s", target)
                     await self.hass.services.async_call("switch", target, {"entity_id": hold_switch})
 
-            # Status-Daten für Sensoren aktualisieren
+            # Daten für Sensoren setzen
             self.data["active_strategy"] = "Laden" if should_charge else ("Sperre" if should_hold else "Normal")
 
         except Exception as e:
