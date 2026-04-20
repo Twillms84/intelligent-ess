@@ -110,44 +110,69 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         return self.data
 
     async def _run_logic_cycle(self, config, current):
-        from datetime import time as dt_time # Wichtig für Vergleich
+        """Zentrale Steuerung basierend auf Zeit-Slots."""
+        from datetime import time as dt_time  # Wichtig für den Vergleich
         
-        now = dt_util.now()
-        now_t = now.time() # Aktuelle Uhrzeit als Vergleichsobjekt
-        soc = current.get("bat_soc", 0)
-        
-        def is_in_slot(key_prefix):
-            enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
-            if not enabled: return False
+        try:
+            now = dt_util.now()
+            now_t = now.time()
+            soc = current.get("bat_soc", 0)
             
-            try:
-                # ISO-Strings aus Options holen
-                start_t = dt_time.fromisoformat(self.config_entry.options.get(f"{key_prefix}_start", "00:00:00"))
-                end_t = dt_time.fromisoformat(self.config_entry.options.get(f"{key_prefix}_end", "00:00:00"))
+            charge_switch = config.get("battery_charge_switch")
+            hold_switch = config.get("battery_hold_switch")
+
+            # --- SLOT-LOGIK (Präzise mit Time-Objekten) ---
+            def is_in_slot(key_prefix):
+                enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
+                if not enabled:
+                    return False
                 
-                if start_t <= end_t:
-                    return start_t <= now_t < end_t
-                return now_t >= start_t or now_t < end_t # Über Mitternacht
-            except:
-                return False
+                try:
+                    # Hole ISO-Zeitstrings (Format "HH:MM:SS")
+                    start_str = self.config_entry.options.get(f"{key_prefix}_start", "00:00:00")
+                    end_str = self.config_entry.options.get(f"{key_prefix}_end", "00:00:00")
+                    
+                    # Umwandeln in Zeit-Objekte für den Vergleich
+                    start_t = dt_time.fromisoformat(start_str)
+                    end_t = dt_time.fromisoformat(end_str)
+                    
+                    if start_t <= end_t:
+                        return start_t <= now_t < end_t
+                    # Fall: Über Mitternacht (z.B. 22:00 - 04:00)
+                    return now_t >= start_t or now_t < end_t
+                except (ValueError, TypeError) as err:
+                    _LOGGER.error("Zeitformat-Fehler in Slot %s: %s", key_prefix, err)
+                    return False
 
             # --- STRATEGIE ERMITTELN ---
-            # Wir prüfen beide Slots für das Laden
             should_charge = is_in_slot("man_charge_s1") or is_in_slot("man_charge_s2")
-            
-            # Wir prüfen den Slot für die Entladesperre
             should_hold = is_in_slot("man_hold_s1")
 
-            # --- SICHERHEITS-LEITPLANKEN ---
-            # 1. Wenn Akku voll (> 95%), Laden erzwingen AUS
+            # Sicherheit & Priorität
             if soc >= 95:
-                if should_charge:
-                    _LOGGER.info("SOC Target erreicht (95%). Breche Ladevorgang ab.")
                 should_charge = False
-
-            # 2. Konfliktlösung: Laden hat Priorität vor Hold
             if should_charge:
                 should_hold = False
+
+            # --- SCHALTVORGÄNGE ---
+            if charge_switch:
+                target = "turn_on" if should_charge else "turn_off"
+                # Nur schalten, wenn nötig (schont die API)
+                current_state = self.hass.states.get(charge_switch)
+                if current_state and current_state.state != ("on" if should_charge else "off"):
+                    await self.hass.services.async_call("switch", target, {"entity_id": charge_switch})
+
+            if hold_switch:
+                target = "turn_on" if should_hold else "turn_off"
+                current_state = self.hass.states.get(hold_switch)
+                if current_state and current_state.state != ("on" if should_hold else "off"):
+                    await self.hass.services.async_call("switch", target, {"entity_id": hold_switch})
+
+            # Status-Daten für Sensoren aktualisieren
+            self.data["active_strategy"] = "Laden" if should_charge else ("Sperre" if should_hold else "Normal")
+
+        except Exception as e:
+            _LOGGER.error("Fehler im ESS Logic Cycle: %s", e)
 
             # --- SCHALTVORGÄNGE AUSFÜHREN ---
             
