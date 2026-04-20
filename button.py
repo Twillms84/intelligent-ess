@@ -95,38 +95,29 @@ class IntelligentESSKIButton(ButtonEntity):
         )
 
         try:
-            result = await self.hass.services.async_call(
-                "conversation", "process", 
-                {
-                    "text": prompt,
-                    "agent_id": "conversation.google_ai_conversation_2" # PRÜFEN OB KORREKT!
-                },
-                blocking=True, return_response=True
-            )
+            result = await self.hass.services.async_call("conversation", "process", 
+                {"text": prompt, "agent_id": "conversation.google_ai_conversation_2"},
+                blocking=True, return_response=True)
             
             full_text = result["response"]["speech"]["plain"]["speech"]
-            _LOGGER.debug("KI Roh-Antwort: %s", full_text)
+            if "RESULT:" in full_text:
+                data_str = full_text.split("RESULT:")[1].strip().replace("```json", "").replace("```", "")
+                cmd = json.loads(data_str)
+                
+                # Werte in manuelle Slots schreiben
+                new_opts = dict(self.entry.options)
+                if cmd.get("charge") == "YES":
+                    st_hour = int(cmd.get("start", "00:00").split(":")[0])
+                    dur = int(cmd.get("duration", 3))
+                    new_opts["man_charge_s1_start"] = st_hour
+                    new_opts["man_charge_s1_end"] = (st_hour + dur) % 24
+                    new_opts["man_charge_s1_enabled"] = True
+                
+                new_opts["ki_reason"] = cmd.get("reason", "KI Analyse")
+                self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
 
-            # Sichereres Splitting (Groß/Kleinschreibung ignorieren)
-            import re
-            parts = re.split(r"RESULT:", full_text, flags=re.IGNORECASE)
-            ki_text = parts[0].strip()
-            
-            if len(parts) > 1:
-                try:
-                    data_str = parts[1].strip()
-                    # Manchmal setzt die KI Markdown-Codeblöcke um das JSON
-                    data_str = data_str.replace("```json", "").replace("```", "").strip()
-                    cmd = json.loads(data_str)
-                    
-                    self.coordinator.data["ki_charge_decision"] = cmd.get("charge", "NO")
-                    self.coordinator.data["ki_charge_start"] = cmd.get("start", "00:00")
-                    self.coordinator.data["ki_reason"] = cmd.get("reason", "Strategie berechnet")
-                except Exception as json_err:
-                    _LOGGER.error("JSON Fehler: %s bei String: %s", json_err, data_str)
-            else:
-                _LOGGER.warning("KI hat kein 'RESULT:' geliefert. Antwort war: %s", full_text)
-                ki_text = full_text # Falls kein RESULT da ist, nimm den ganzen Text
+        except Exception as e:
+            _LOGGER.error("KI-Button Fehler: %s", e)
 
         # Notification senden
         await self.hass.services.async_call(

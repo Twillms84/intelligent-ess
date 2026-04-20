@@ -110,107 +110,85 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         return self.data
 
     async def _run_logic_cycle(self, config, current):
+        """Zentrale Steuerung: Prüft Slots und schaltet Entitäten."""
         try:
             now = dt_util.now()
+            now_hour = now.hour
+            now_min = now.minute
+            current_time_str = now.strftime("%H:%M")
+            
             soc = current.get("bat_soc", 0)
-            cap = float(config.get("battery_capacity", 15.0))
-            min_soc = float(config.get("min_soc_reserve", 10.0))
-            kwh_now = max(0, (cap * (soc - min_soc)) / 100)
             
-            # --- TIBBER PREIS DATA FIX ---
-            price_entity = config.get("tibber_export_sensor")
-            self.data["prices_raw"] = []
-            
-            if price_entity:
-                p_state = self.hass.states.get(price_entity)
-                if p_state:
-                    prices_list = p_state.attributes.get("data", [])
-                    if isinstance(prices_list, list) and len(prices_list) > 0:
-                        self.data["prices_raw"] = prices_list
-                        _LOGGER.info("COORDINATOR: %s Preis-Slots aus %s geladen.", len(prices_list), price_entity)
-                    else:
-                        _LOGGER.warning("COORDINATOR: Attribut 'data' in %s ist leer!", price_entity)
-            
-            prices = self.data["prices_raw"]
+            # Entitäten aus der Config holen
+            charge_switch = config.get("battery_charge_switch")
+            hold_switch = config.get("battery_hold_switch")
 
-            # --- RESTLICHE LOGIK ---
-            options = self.config_entry.options
-            entry_data = self.config_entry.data
-            fallback_hourly = float(options.get("default_usage", entry_data.get("default_usage", 0.6)))
-
-            # 1. Täglicher Restbedarf (rollierend 24h)
-            rest_daily = await self.hass.async_add_executor_job(
-                ProfileManager.get_daily_rest_demand, self.profile_path, now, fallback_hourly
-            )
-            self.data["rest_demand_daily"] = round(rest_daily, 2)
-            self.data["morning_reserve"] = round(rest_daily * 0.2, 2)
-
-            # 2. Stunden-Forecasts
-            cur_rem, next_full = await self.hass.async_add_executor_job(
-                ProfileManager.get_hour_forecasts, self.profile_path, now, fallback_hourly
-            )
-            self.data["forecast_current_hour"] = round(cur_rem, 2)
-            self.data["forecast_next_hour"] = round(next_full, 2)
-
-            # Solar-Prognose abrufen
-            solar_fc = 0.0
-            solar_fc_entity_id = config.get("solar_forecast_sensor", "")
-            if solar_fc_entity_id:
-                fc_state = self.hass.states.get(solar_fc_entity_id)
-                if fc_state and fc_state.state not in ['unknown', 'unavailable', 'none']:
-                    try:
-                        solar_fc = float(fc_state.state) 
-                    except ValueError: pass
-
-            # Strategie-Entscheidung (Interne Logik)
-            should_charge, c_msg = SmartCharging.calculate_charge_strategy(
-                config, soc, kwh_now, rest_daily, solar_fc, prices
-            )
-            
-            if should_charge:
-                self.data["strat"], self.data["strat_msg"] = "LADEN", c_msg
-            else:
-                strat, d_msg = SmartDischarging.calculate_discharge_strategy(
-                    config, soc, kwh_now, self.data["morning_reserve"], prices
-                )
-                self.data["strat"], self.data["strat_msg"] = strat, d_msg
-
-            self.data["fahrplan"] = f"Bedarf 24h: {self.data['rest_demand_daily']}kWh | PV: {round(solar_fc,1)}kWh"
-
-            # --- AUTOMATISCHE KI-AUSFÜHRUNG ---
-            ki_decision = self.data.get("ki_charge_decision", "NO")
-            ki_start_time = self.data.get("ki_charge_start", "00:00")
-            
-            # 1. Prüfen, ob der Nutzer die Automatik erlaubt hat
-            # Erstelle in HA einen 'input_boolean.intelligent_ess_automatik'
-            auto_allowed = self.hass.states.get("input_boolean.intelligent_ess_automatik")
-            is_auto_on = auto_allowed and auto_allowed.state == "on"
-
-            if ki_decision == "YES" and is_auto_on:
-                current_time = now.strftime("%H:%M")
+            # --- HILFSFUNKTION FÜR SLOT-PRÜFUNG ---
+            def is_in_slot(key_prefix):
+                enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
+                if not enabled: return False
                 
-                # Vergleich: Ist es Zeit zu laden?
-                if current_time == ki_start_time:
-                    charge_switch = config.get("battery_charge_switch")
-                    if charge_switch:
-                        _LOGGER.warning("AUTOPILOT AKTIV: %s", self.data.get("ki_reason", "KI-Entscheidung"))
-                        await self.hass.services.async_call("switch", "turn_on", {"entity_id": charge_switch})
-            # Automatischer Stopp bei vollem Akku
-            if soc >= 95 and charge_switch:
-                s_state = self.hass.states.get(charge_switch)
-                if s_state and s_state.state == "on":
-                    _LOGGER.info("KI-AUTOPILOT: Akku voll (%s%%), schalte Laden aus.", soc)
-                    await self.hass.services.async_call("switch", "turn_off", {"entity_id": charge_switch})
+                # ISO-Strings aus den Time-Entities laden
+                start_str = self.config_entry.options.get(f"{key_prefix}_start", "00:00:00")
+                end_str = self.config_entry.options.get(f"{key_prefix}_end", "00:00:00")
+                
+                start_t = time.fromisoformat(start_str)
+                end_t = time.fromisoformat(end_str)
+                now_t = now.time() # Aktuelle Uhrzeit als time-Objekt
 
-            # --- AUTOMATISCHER KI-TRIGGER (Jeden Tag um 14:05 Uhr) ---
-            if now.hour == 14 and now.minute == 5:
-                # Wir lösen den Button-Press-Service aus
-                button_entity = f"button.{self.config_entry.entry_id}_ki_button"
-                _LOGGER.info("KI-AUTOPILOT: Trigger tägliche Analyse via %s", button_entity)
-                await self.hass.services.async_call("button", "press", {"entity_id": button_entity})
+                if start_t <= end_t:
+                    return start_t <= now_t < end_t
+                else: # Über Mitternacht
+                    return now_t >= start_t or now_t < end_t
+
+            # --- STRATEGIE ERMITTELN ---
+            # Wir prüfen beide Slots für das Laden
+            should_charge = is_in_slot("man_charge_s1") or is_in_slot("man_charge_s2")
+            
+            # Wir prüfen den Slot für die Entladesperre
+            should_hold = is_in_slot("man_hold_s1")
+
+            # --- SICHERHEITS-LEITPLANKEN ---
+            # 1. Wenn Akku voll (> 95%), Laden erzwingen AUS
+            if soc >= 95:
+                if should_charge:
+                    _LOGGER.info("SOC Target erreicht (95%). Breche Ladevorgang ab.")
+                should_charge = False
+
+            # 2. Konfliktlösung: Laden hat Priorität vor Hold
+            if should_charge:
+                should_hold = False
+
+            # --- SCHALTVORGÄNGE AUSFÜHREN ---
+            
+            # Lade-Schalter steuern
+            if charge_switch:
+                target_charge_state = "turn_on" if should_charge else "turn_off"
+                current_charge_state = self.hass.states.get(charge_switch)
+                
+                if current_charge_state and current_charge_state.state != ("on" if should_charge else "off"):
+                    _LOGGER.info("Schalte Laden: %s (Grund: Slot aktiv oder KI-Vorgabe)", target_charge_state)
+                    await self.hass.services.async_call(
+                        "switch", target_charge_state, {"entity_id": charge_switch}
+                    )
+
+            # Hold-Schalter (Entladesperre) steuern
+            if hold_switch:
+                target_hold_state = "turn_on" if should_hold else "turn_off"
+                current_hold_state = self.hass.states.get(hold_switch)
+
+                if current_hold_state and current_hold_state.state != ("on" if should_hold else "off"):
+                    _LOGGER.info("Schalte Entladesperre: %s", target_hold_state)
+                    await self.hass.services.async_call(
+                        "switch", target_hold_state, {"entity_id": hold_switch}
+                    )
+
+            # --- STATUS FÜR SENSOR UPDATEN ---
+            self.data["active_strategy"] = "Laden" if should_charge else ("Sperre" if should_hold else "Normal")
+            self.data["last_logic_run"] = current_time_str
 
         except Exception as e:
-            _LOGGER.error("Fehler im Logik-Zyklus: %s", e)
+            _LOGGER.error("Fehler im Intelligent ESS Logic Cycle: %s", e)
 
     def _update_finances(self, config, deltas, house_kwh):
         """Berechnet Ersparnisse getrennt nach Solar, Hold und Load."""
