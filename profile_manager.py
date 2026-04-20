@@ -1,141 +1,138 @@
-import os
 import json
+import os
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 _LOGGER = logging.getLogger(__name__)
 
 class ProfileManager:
-    @staticmethod
-    def get_daily_rest_demand(path, now, fallback_hourly):
-        """Berechnet den Bedarf für die nächsten 24 Stunden (PV-zu-PV Zyklus)."""
+    """
+    Lernendes Profil-Management auf Viertelstunden-Basis.
+    Berechnet Restbedarf und Prognosen basierend auf historischem Gewicht.
+    """
+
+    def __init__(self, storage_path):
+        self.path = os.path.join(storage_path, "usage_stats.json")
+
+    def _get_db(self):
+        """Lädt die Datenbank sicher."""
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                _LOGGER.error("Fehler beim Laden der Profildaten: %s", e)
+        return {}
+
+    def get_daily_rest_demand(self, now, default_usage=0.6):
+        """Berechnet den Restbedarf von JETZT bis 23:59 Uhr."""
         total_rest = 0.0
         try:
-            profile = {}
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    profile = json.load(f)
+            profile = self._get_db()
+            current_hour = now.hour
+            current_minute = now.minute
+            weekday = str(now.weekday())
 
-            # Wir loopen über die nächsten 24 Stunden
-            for hour_offset in range(24):
-                future_time = now + timedelta(hours=hour_offset)
-                d = str(future_time.weekday())
-                h = str(future_time.hour)
-                
-                # Hole Profil-Daten für diesen Wochentag und diese Stunde
-                hour_data = profile.get(d, {}).get(h, {})
-                val_h = sum(float(v) for v in hour_data.values()) / len(hour_data) if hour_data else fallback_hourly
-                
-                if hour_offset == 0:
-                    # Aktuelle Stunde nur anteilig berechnen
-                    total_rest += val_h * ((60 - now.minute) / 60)
-                else:
-                    total_rest += val_h
+            # 1. Rest der aktuellen Stunde berechnen
+            hour_data = profile.get(weekday, {}).get(str(current_hour), {})
+            val_this_hour = sum(float(v) for v in hour_data.values()) / len(hour_data) if hour_data else default_usage
+            
+            remaining_factor = (60 - current_minute) / 60
+            total_rest += val_this_hour * remaining_factor
+
+            # 2. Volle Stunden bis Mitternacht
+            for h in range(current_hour + 1, 24):
+                hr_data = profile.get(weekday, {}).get(str(h), {})
+                val_h = sum(float(v) for v in hr_data.values()) / len(hr_data) if hr_data else default_usage
+                total_rest += val_h
 
             return round(total_rest, 2)
         except Exception as e:
-            _LOGGER.error("Fehler beim rollierenden Bedarf: %s", e)
-            return round(fallback_hourly * 24, 2)
+            _LOGGER.error("Fehler beim Restbedarf-Read: %s", e)
+            return 5.0
 
-    @staticmethod
-    def get_hour_forecasts(path, now, fallback_hourly):
-        """
-        Liefert Forecast für aktuelle Stunde (herunterlaufend) und nächste Stunde (voll).
-        """
+    def get_hour_forecasts(self, now, default_usage=0.6):
+        """Liefert Forecast für aktuelle Stunde (herunterlaufend) und nächste Stunde (voll)."""
         try:
-            profile = {}
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    profile = json.load(f)
-            
+            profile = self._get_db()
             weekday = str(now.weekday())
             
             # Aktuelle Stunde (anteilig)
             h0 = str(now.hour)
             data0 = profile.get(weekday, {}).get(h0, {})
-            val0 = sum(float(v) for v in data0.values()) / len(data0) if data0 else fallback_hourly
+            val0 = sum(float(v) for v in data0.values()) / len(data0) if data0 else default_usage
             rem_factor = (60 - now.minute) / 60
             current_hour_rem = round(val0 * rem_factor, 2)
 
-            # Nächste Stunde (voll)
+            # Nächste Stunde
             next_time = now + timedelta(hours=1)
             h1 = str(next_time.hour)
             d1 = str(next_time.weekday())
             data1 = profile.get(d1, {}).get(h1, {})
-            next_hour_full = round(sum(float(v) for v in data1.values()) / len(data1) if data1 else fallback_hourly, 2)
+            next_hour_full = round(sum(float(v) for v in data1.values()) / len(data1) if data1 else default_usage, 2)
 
             return current_hour_rem, next_hour_full
-        except Exception as e:
-            _LOGGER.error("Fehler beim Hour-Forecast: %s", e)
-            return round(fallback_hourly * 0.5, 2), fallback_hourly
+        except:
+            return 0.3, 0.6
 
-    @staticmethod
-    def update_profile(path, now, samples, config):
-        """Berechnet den neuen gewichteten Durchschnitt und speichert ihn."""
+    def update_profile(self, now, samples, config_default_usage=0.6):
+        """Berechnet den neuen gewichteten Durchschnitt (70/30) und speichert ihn."""
         if not samples:
             return
             
-        # Durchschnitt der letzten 15 Minuten als Stunden-Projektion
-        # Wenn in 15 Min 0.2kWh verbraucht wurden, ist die Projektion 0.8kWh/h
+        # Projektion auf Stundenbasis
         hourly_kwh_projection = (sum(samples) / len(samples)) * (60 / (len(samples) if len(samples) > 0 else 1))
         
         try:
-            db = {}
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    db = json.load(f)
-            
+            db = self._get_db()
             d = str(now.weekday())
             h = str(now.hour)
-            # Wir runden auf die Viertelstunde (0, 15, 30, 45) für saubere Indizes
-            m = str((now.minute // 15) * 15)
+            m = str((now.minute // 15) * 15) # Viertelstunden-Index
             
             db.setdefault(d, {}).setdefault(h, {})
             
-            default_usage = float(config.get("default_usage", 0.6))
-            old_val = float(db[d][h].get(m, default_usage))
+            # Altwert aus DB oder Default
+            old_val = float(db[d][h].get(m, config_default_usage))
             
             # LERNEFFEKT: 70% Altwert, 30% neuer Messwert
             db[d][h][m] = round((old_val * 0.7) + (hourly_kwh_projection * 0.3), 3)
             
-            with open(path, 'w') as f:
-                json.dump(db, f, indent=2) # indent für bessere Lesbarkeit beim Debuggen
+            with open(self.path, 'w') as f:
+                json.dump(db, f, indent=2)
                 
-            _LOGGER.debug("Profil-Update: %s Tag %s, %s:%s Uhr -> %s kWh/h", d, h, m, db[d][h][m])
+            _LOGGER.debug("Profil-Update: Tag %s, %s:%s Uhr -> %s kWh/h", d, h, m, db[d][h][m])
         except Exception as e:
             _LOGGER.error("Fehler beim Profil-Update: %s", e)
-    
-    def _get_manual_slots(self, options):
-        """Extrahiert die Slots aus den neuen Time-Entities (Options)."""
-        slots = []
-        try:
-            # Wir prüfen die neuen Keys, die wir in time.py definiert haben
-            for i in [1, 2]:
-                enabled = options.get(f"man_charge_s{i}_enabled", False)
-                if enabled:
-                    start_str = options.get(f"man_charge_s{i}_start", "00:00:00")
-                    end_str = options.get(f"man_charge_s{i}_end", "00:00:00")
-                    
-                    # Umwandlung von ISO-String in Stunden-Dezimal für den Profiler
-                    st = dt_time.fromisoformat(start_str)
-                    en = dt_time.fromisoformat(end_str)
-                    
-                    # Umrechnung in Stunden-Dezimal (z.B. 02:30 -> 2.5) für die Matrix
-                    start_decimal = st.hour + st.minute / 60.0
-                    end_decimal = en.hour + en.minute / 60.0
-                    
-                    slots.append({"start": start_decimal, "end": end_decimal, "type": "charge"})
+
+    def calculate_best_profile(self, data, options):
+        """
+        Diese Methode verknüpft die historischen Daten mit der Tibber-Logik.
+        """
+        profile = [0] * 24
+        now = datetime.now()
+        prices = data.get("prices", [])
+        solar = data.get("solar_forecast", {})
+        
+        def_usage = float(options.get("default_usage", 0.6))
+        advantage = float(options.get("charge_delta_threshold", 5.0))
+
+        if not prices or not options.get("auto_charge_enabled", True):
+            return profile
+
+        avg_price = sum(p['total'] for p in prices[:24]) / len(prices[:24])
+
+        for p_info in prices[:24]:
+            p_time = datetime.fromisoformat(p_info['startsAt'].replace("Z", "+00:00"))
             
-            # Dasselbe für Hold-Slots
-            if options.get("man_hold_s1_enabled", False):
-                h_start = dt_time.fromisoformat(options.get("man_hold_s1_start", "00:00:00"))
-                h_end = dt_time.fromisoformat(options.get("man_hold_s1_end", "00:00:00"))
-                slots.append({
-                    "start": h_start.hour + h_start.minute / 60.0,
-                    "end": h_end.hour + h_end.minute / 60.0,
-                    "type": "hold"
-                })
-        except Exception as e:
-            _LOGGER.error("Fehler beim Laden der manuellen Profile: %s", e)
+            # Bedarf für diese Stunde basierend auf gelernten Viertelstunden berechnen
+            db = self._get_db()
+            hr_data = db.get(str(p_time.weekday()), {}).get(str(p_time.hour), {})
+            predicted_hr = sum(float(v) for v in hr_data.values()) / len(hr_data) if hr_data else def_usage
             
-        return slots
+            solar_val = solar.get(p_time.strftime("%Y-%m-%d %H:00:00"), 0)
+            net_need = predicted_hr - solar_val
+
+            if net_need > 0 and p_info['total'] < (avg_price - advantage):
+                profile[p_time.hour] = 1
+
+        return profile

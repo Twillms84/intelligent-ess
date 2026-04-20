@@ -44,7 +44,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             },
             "samples": []
         }
-        self._savings_loaded = False
+        self._load_savings()
 
     def _load_savings(self):
         """Lädt Ersparnisse beim Start."""
@@ -60,11 +60,6 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 _LOGGER.error("Fehler beim Laden der Ersparnisse: %s", e)
 
     async def _async_update_data(self):
-        
-        if not self._savings_loaded:
-            await self.hass.async_add_executor_job(self._load_savings)
-            self._savings_loaded = True
-        
         config = {**self.entry.data, **self.entry.options}
         current = self._get_raw_states(config)
         
@@ -110,104 +105,59 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         return self.data
 
     async def _run_logic_cycle(self, config, current):
-        """Zentrale Steuerung basierend auf Zeit-Slots."""
-        # Wir importieren die richtige Klasse lokal, um Konflikte zu vermeiden
-        from datetime import time as dt_time 
-        
         try:
             now = dt_util.now()
-            now_t = now.time()
             soc = current.get("bat_soc", 0)
+            cap = float(config.get("battery_capacity", 15.0))
+            min_soc = float(config.get("min_soc_reserve", 10.0))
+            kwh_now = max(0, (cap * (soc - min_soc)) / 100)
             
-            charge_switch = config.get("battery_charge_switch")
-            hold_switch = config.get("battery_hold_switch")
+            p_state = self.hass.states.get(config.get("tibber_price_sensor", ""))
+            prices = p_state.attributes.get("data", []) if p_state else []
 
-            # --- SLOT-LOGIK (Präzise mit Time-Objekten) ---
-            def is_in_slot(key_prefix):
-                enabled = self.config_entry.options.get(f"{key_prefix}_enabled", False)
-                if not enabled:
-                    return False
-                
-                try:
-                    # Hole ISO-Zeitstrings aus den Options (Default 00:00:00)
-                    start_str = self.config_entry.options.get(f"{key_prefix}_start", "00:00:00")
-                    end_str = self.config_entry.options.get(f"{key_prefix}_end", "00:00:00")
-                    
-                    # Umwandeln in datetime.time Objekte
-                    start_t = dt_time.fromisoformat(start_str)
-                    end_t = dt_time.fromisoformat(end_str)
-                    
-                    if start_t <= end_t:
-                        # Normaler Zeitraum (z.B. 08:00 - 16:00)
-                        return start_t <= now_t < end_t
-                    else:
-                        # Zeitraum über Mitternacht (z.B. 22:00 - 06:00)
-                        return now_t >= start_t or now_t < end_t
-                except (ValueError, TypeError) as err:
-                    _LOGGER.error("Zeitformat-Fehler in Slot %s: %s", key_prefix, err)
-                    return False
+            # --- NEU: Detaillierter Forecast über die neuen Funktionen ---
+            # 1. Täglicher Restbedarf
+            rest_daily = await self.hass.async_add_executor_job(
+                ProfileManager.get_daily_rest_demand, self.profile_path, now
+            )
+            self.data["rest_demand_daily"] = rest_daily
+            self.data["morning_reserve"] = round(rest_daily * 0.2, 2)
 
-            # --- STRATEGIE ERMITTELN ---
-            should_charge = is_in_slot("man_charge_s1") or is_in_slot("man_charge_s2")
-            should_hold = is_in_slot("man_hold_s1")
+            # 2. Stunden-Forecasts (Aktuell und Nächste)
+            cur_rem, next_full = await self.hass.async_add_executor_job(
+                ProfileManager.get_hour_forecasts, self.profile_path, now
+            )
+            self.data["forecast_current_hour"] = cur_rem
+            self.data["forecast_next_hour"] = next_full
+            # -------------------------------------------------------------
 
-            # Sicherheit & Priorität
-            if soc >= 95:
-                should_charge = False
+            # Solar-Prognose abrufen
+            solar_fc = 0.0
+            solar_fc_entity_id = config.get("solar_forecast_sensor", "")
+            if solar_fc_entity_id:
+                fc_state = self.hass.states.get(solar_fc_entity_id)
+                if fc_state and fc_state.state not in ['unknown', 'unavailable', 'none']:
+                    try:
+                        solar_fc = float(fc_state.state) 
+                    except ValueError:
+                        pass
+
+            # Strategie-Entscheidung
+            should_charge, c_msg = SmartCharging.calculate_charge_strategy(
+                config, soc, kwh_now, rest_daily, solar_fc, prices
+            )
+            
             if should_charge:
-                should_hold = False # Laden sticht Entladesperre
+                self.data["strat"], self.data["strat_msg"] = "LADEN", c_msg
+            else:
+                strat, d_msg = SmartDischarging.calculate_discharge_strategy(
+                    config, soc, kwh_now, self.data["morning_reserve"], prices
+                )
+                self.data["strat"], self.data["strat_msg"] = strat, d_msg
 
-            # --- SCHALTVORGÄNGE (mit State-Check zur API-Schonung) ---
-            if charge_switch:
-                target = "turn_on" if should_charge else "turn_off"
-                curr = self.hass.states.get(charge_switch)
-                if curr and curr.state != ("on" if should_charge else "off"):
-                    _LOGGER.info("Schalte Laden %s", target)
-                    await self.hass.services.async_call("switch", target, {"entity_id": charge_switch})
-
-            if hold_switch:
-                target = "turn_on" if should_hold else "turn_off"
-                curr = self.hass.states.get(hold_switch)
-                if curr and curr.state != ("on" if should_hold else "off"):
-                    _LOGGER.info("Schalte Entladesperre %s", target)
-                    await self.hass.services.async_call("switch", target, {"entity_id": hold_switch})
-
-            # Daten für Sensoren setzen
-            self.data["active_strategy"] = "Laden" if should_charge else ("Sperre" if should_hold else "Normal")
-
+            self.data["fahrplan"] = f"Bedarf heute: {rest_daily}kWh | {self.data['strat']}"
         except Exception as e:
-            _LOGGER.error("Fehler im ESS Logic Cycle: %s", e)
-
-            # --- SCHALTVORGÄNGE AUSFÜHREN ---
-            
-            # Lade-Schalter steuern
-            if charge_switch:
-                target_charge_state = "turn_on" if should_charge else "turn_off"
-                current_charge_state = self.hass.states.get(charge_switch)
-                
-                if current_charge_state and current_charge_state.state != ("on" if should_charge else "off"):
-                    _LOGGER.info("Schalte Laden: %s (Grund: Slot aktiv oder KI-Vorgabe)", target_charge_state)
-                    await self.hass.services.async_call(
-                        "switch", target_charge_state, {"entity_id": charge_switch}
-                    )
-
-            # Hold-Schalter (Entladesperre) steuern
-            if hold_switch:
-                target_hold_state = "turn_on" if should_hold else "turn_off"
-                current_hold_state = self.hass.states.get(hold_switch)
-
-                if current_hold_state and current_hold_state.state != ("on" if should_hold else "off"):
-                    _LOGGER.info("Schalte Entladesperre: %s", target_hold_state)
-                    await self.hass.services.async_call(
-                        "switch", target_hold_state, {"entity_id": hold_switch}
-                    )
-
-            # --- STATUS FÜR SENSOR UPDATEN ---
-            self.data["active_strategy"] = "Laden" if should_charge else ("Sperre" if should_hold else "Normal")
-            self.data["last_logic_run"] = current_time_str
-
-        except Exception as e:
-            _LOGGER.error("Fehler im Intelligent ESS Logic Cycle: %s", e)
+            _LOGGER.error("Fehler im Logik-Zyklus: %s", e)
 
     def _update_finances(self, config, deltas, house_kwh):
         """Berechnet Ersparnisse getrennt nach Solar, Hold und Load."""
@@ -248,29 +198,23 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
     def _get_raw_states(self, config):
         try:
-            # Hilfsfunktion zum sicheren Auslesen
-            def safe_float(entity_id):
-                if not entity_id:
-                    return 0.0
-                state_obj = self.hass.states.get(entity_id)
-                if state_obj and state_obj.state not in ['unknown', 'unavailable', 'none']:
-                    try:
-                        return float(state_obj.state)
-                    except ValueError:
-                        return 0.0
-                return 0.0
-
             pv_ids = config.get("pv_production_sensor", [])
             if isinstance(pv_ids, str): pv_ids = [pv_ids]
             
             return {
-                "pv": sum(safe_float(i) for i in pv_ids),
-                "grid_in": safe_float(config.get("grid_consumption_sensor")),
-                "grid_out": safe_float(config.get("grid_export_sensor")),
-                "bat_chg": safe_float(config.get("bat_charge_sensor")),
-                "bat_dis": safe_float(config.get("bat_discharge_sensor")),
-                "bat_soc": safe_float(config.get("battery_soc_sensor"))
+                "pv": sum(float(self.hass.states.get(i).state) for i in pv_ids if self._is_valid(i)),
+                "grid_in": float(self.hass.states.get(config.get("grid_consumption_sensor")).state),
+                "grid_out": float(self.hass.states.get(config.get("grid_export_sensor")).state),
+                "bat_chg": float(self.hass.states.get(config.get("bat_charge_sensor")).state),
+                "bat_dis": float(self.hass.states.get(config.get("bat_discharge_sensor")).state),
+                "bat_soc": float(self.hass.states.get(config.get("battery_soc_sensor")).state)
             }
+        except AttributeError as ae:
+            _LOGGER.error("Ein Sensor fehlt oder wurde umbenannt! %s", ae)
+            return None
+        except ValueError as ve:
+            _LOGGER.error("Ein Sensor liefert keine Zahl (evtl. unavailable)! %s", ve)
+            return None
         except Exception as e:
             _LOGGER.error("Allgemeiner Fehler bei Sensorabfrage: %s", e)
             return None

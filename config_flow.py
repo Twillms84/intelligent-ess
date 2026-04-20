@@ -3,21 +3,22 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import selector
 from homeassistant.core import callback
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-DOMAIN = "intelligent_ess"
 
 class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
+        """Erster Setup-Schritt."""
         if user_input is not None:
             return self.async_create_entry(title="Intelligent ESS", data=user_input)
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
-                # Sensoren (PV jetzt Multiple)
+                # Sensoren
                 vol.Required("pv_production_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy", multiple=True)),
                 vol.Required("grid_consumption_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy")),
                 vol.Required("grid_export_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy")),
@@ -32,7 +33,7 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
                 vol.Required("wr_limit_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
                 
-                # Parameter (Saubere Validierung)
+                # Parameter
                 vol.Required("battery_capacity", default=15.0): vol.Coerce(float),
                 vol.Required("charge_delta_threshold", default=10.0): vol.Coerce(float),
                 vol.Required("sun_yield_threshold", default=20.0): vol.Coerce(float),
@@ -55,15 +56,22 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, config_entry):
-        self._cfg = config_entry 
+    """Behandelt Änderungen an der Konfiguration (Options)."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialisiert den Handler."""
+        # Wir speichern das config_entry nicht selbst (AttributeError), 
+        # Home Assistant macht das bereits in der Basisklasse.
+        pass
 
     async def async_step_init(self, user_input=None):
+        """Haupt-Schritt des Options Flows."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # Merge data und options für die Anzeige der aktuellen Werte
-        config = {**self._cfg.data, **self._cfg.options}
+        # WICHTIG: Zugriff erfolgt über self.config_entry (Property der Basisklasse)
+        # Wir vereinen data (Setup) und options (spätere Änderungen)
+        config = {**self.config_entry.data, **self.config_entry.options}
 
         return self.async_show_form(
             step_id="init",
