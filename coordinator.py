@@ -180,66 +180,129 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Update fehlerhaft: {e}")
 
     async def _run_logic_cycle(self, config, current):
+        """
+        Zentrale Logik-Steuerung.
+        Prüft 4 Szenarien: Alles aus, nur Laden, nur Sperre, beides aktiv.
+        """
         try:
+            # --- Grunddaten vorbereiten ---
             now = dt_util.now()
             soc = current.get("bat_soc", 0)
             cap = float(config.get("battery_capacity", 15.0))
             min_soc = float(config.get("min_soc_reserve", 10.0))
             kwh_now = max(0, (cap * (soc - min_soc)) / 100)
             
-            # --- 1. Tibber-Preise sicher abrufen ---
-            # Nutzt die etablierte Methode, die 'today' und 'tomorrow' ausliest
-            # und das Abstürzen bei leeren Listen verhindert.
+            # Tibber-Preise und Solar-Forecast abrufen
             prices = await self._get_tibber_prices()
-
-            # --- 2. Detaillierter Forecast über die neuen Funktionen ---
-            # WICHTIG: Wir rufen self.profile_manager (die Instanz) auf, nicht die Klasse!
-            # async_add_executor_job verlagert den Datei/DB-Zugriff, damit HA nicht blockiert.
-            default_usage = float(config.get("default_usage", 0.85))
-            
+            # 1. Täglicher Restbedarf
             rest_daily = await self.hass.async_add_executor_job(
-                self.profile_manager.get_daily_rest_demand, now, default_usage
+                ProfileManager.get_daily_rest_demand, self.profile_path, now
             )
             self.data["rest_demand_daily"] = rest_daily
             self.data["morning_reserve"] = round(rest_daily * 0.2, 2)
 
+            # 2. Stunden-Forecasts (Aktuell und Nächste)
             cur_rem, next_full = await self.hass.async_add_executor_job(
-                self.profile_manager.get_hour_forecasts, now
+                ProfileManager.get_hour_forecasts, self.profile_path, now
             )
             self.data["forecast_current_hour"] = cur_rem
             self.data["forecast_next_hour"] = next_full
+
+            # Solar-Prognose abrufen
+            solar_fc = 0.0
+            solar_fc_entity_id = config.get("solar_forecast_sensor", "")
+            if solar_fc_entity_id:
+                fc_state = self.hass.states.get(solar_fc_entity_id)
+                if fc_state and fc_state.state not in ['unknown', 'unavailable', 'none']:
+                    try:
+                        solar_fc = float(fc_state.state) 
+                    except ValueError:
+                        pass
             # -------------------------------------------------------------
 
-            # --- 3. Solar-Prognose abrufen ---
-            # Nutzt unsere sichere Float-Methode ohne manuelles try/except
-            solar_fc_entity_id = config.get("solar_forecast_sensor", "")
-            solar_fc = self._get_safe_float(solar_fc_entity_id)
+            # --- Dashboard-Schalter und Timer auslesen ---
+            
+            # 1. Schalter für Smart Charging (Netz-Laden)
+            charge_sw_id = "switch.intelligent_ess_man_charge_s1_enabled"
+            charge_sw = self.hass.states.get(charge_sw_id)
+            charge_enabled = charge_sw is not None and charge_sw.state == "on"
 
-            # --- 4. Strategie-Entscheidung ---
+            # 2. Schalter für Smart Discharging (Entladesperre)
+            disch_sw_id = "switch.intelligent_ess_man_hold_s1_enabled"
+            disch_sw = self.hass.states.get(disch_sw_id)
+            disch_enabled = disch_sw is not None and disch_sw.state == "on"
+
+            # 3. Manuelle Timer für Entladesperre auslesen
+            s1_start = get_timer_value(self.hass, "time.intelligent_ess_man_hold_s1_start")
+            s1_end   = get_timer_value(self.hass, "time.intelligent_ess_man_hold_s1_end")
+            
+            active_timers = []
+            if s1_start and s1_end:
+                active_timers.append({"start": s1_start, "end": s1_end})
+            
+            # KI-Timer hinzufügen (falls vorhanden)
+            ai_timers = self.data.get("ai_timers", [])
+            active_timers.extend(ai_timers)
+
+            # Paket für die Discharging-Logik schnüren
             logic_input = {
-                "smart_discharge_enabled": is_enabled,
+                "smart_discharge_enabled": disch_enabled,
                 "discharge_timers": active_timers
             }
+
+            # --- Strategie-Berechnung (Die 4 Möglichkeiten) ---
             
-            should_charge, c_msg = calculate_smart_charge(
+            # Schritt A: Ladelogik fragen (unabhängig vom Schalter)
+            should_charge_logic, c_msg = calculate_smart_charge(
                 config, soc, kwh_now, rest_daily, solar_fc, prices
             )
             
-            if should_charge:
-                self.data["strat"], self.data["strat_msg"] = "LADEN", c_msg
-            else:
-                # 2. Prüfen, ob entladen gesperrt werden soll (Smart Discharging)
-                # Hier rufen wir die neue Logik-Funktion auf
-                # Wir übergeben hier das logic_input Paket von vorhin oder die Einzelwerte
-                res = calculate_discharge_strategy(logic_input)
-                
-                self.data["strat"] = "SPERRE" if res["discharge_locked"] else "AUTO"
-                self.data["strat_msg"] = res["reason"]
+            # Schritt B: Sperrlogik fragen (unabhängig vom Schalter)
+            disch_res = calculate_discharge_strategy(logic_input)
 
-            self.data["fahrplan"] = f"Bedarf heute: {rest_daily} kWh | {self.data['strat']}"
+            lock_needed = False
+
+            # FALL 1 & 4: Laden ist priorisiert (wenn Schalter AN und Logik JA sagt)
+            if charge_enabled and should_charge_logic:
+                self.data["strat"] = "LADEN"
+                self.data["strat_msg"] = c_msg
+                lock_needed = True  # Beim Laden immer Entladung sperren
+
+            # FALL 3: Nur Entladesperre (wenn Laden nicht aktiv, aber Sperre AN und Timer passt)
+            elif disch_enabled and disch_res["discharge_locked"]:
+                self.data["strat"] = "SPERRE"
+                self.data["strat_msg"] = disch_res["reason"]
+                lock_needed = True
+
+            # FALL 2: Beides/Eines AN, aber keine Bedingung (Preis zu hoch / Timer nicht aktiv)
+            # ODER FALL 0: Alles AUS
+            else:
+                self.data["strat"] = "AUTO"
+                self.data["strat_msg"] = "Normalbetrieb / Keine Regel aktiv"
+                lock_needed = False
+
+            # --- Ergebnisse speichern und Hardware steuern ---
+            self.data["discharge_lock_active"] = lock_needed
             
+            # Wechselrichter-Limit setzen (0.0 für Sperre, sonst Unlock-Wert)
+            limit_entity = config.get("wr_limit_entity")
+            if limit_entity:
+                unlock_val = float(config.get("wr_unlock_value", 80))
+                target_limit = 0.0 if lock_needed else unlock_val
+                
+                # Nur senden, wenn sich der Wert geändert hat (schont den Bus)
+                current_state = self.hass.states.get(limit_entity)
+                if current_state and float(current_state.state) != target_limit:
+                    _LOGGER.info("ESS Steuerung: %s auf %s (%s)", limit_entity, target_limit, self.data["strat_msg"])
+                    await self.hass.services.async_call(
+                        "number", "set_value", 
+                        {"entity_id": limit_entity, "value": target_limit}
+                    )
+
+            self.data["fahrplan"] = f"Bedarf: {rest_daily}kWh | Status: {self.data['strat']}"
+
         except Exception as e:
-            _LOGGER.error("Fehler im Logik-Zyklus: %s", e)  
+            _LOGGER.error("Fehler im Logik-Zyklus: %s", e)
     
     async def _get_tibber_prices(self, config=None):
         """Holt die Strompreise aus dem get_chartdata Sensor-Attribut 'data'."""
