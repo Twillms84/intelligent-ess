@@ -5,7 +5,7 @@ from .const import DOMAIN
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         IntelligentESSNumber(entry, "safety_buffer", "Sicherheitsfaktor", 1.0, 2.0, 0.05, "multiplier", EntityCategory.CONFIG),
-        IntelligentESSNumber(entry, "default_usage", "Standardverbrauch", 0.1, 5.0, 0.05, "kW", EntityCategory.CONFIG),
+                IntelligentESSNumber(entry, "default_usage", "Standardverbrauch", 0.1, 5.0, 0.05, "kW", EntityCategory.CONFIG),
         IntelligentESSNumber(entry, "min_soc_reserve", "Min. SOC (Nacht-Reserve)", 5.0, 50.0, 1.0, "%", EntityCategory.CONFIG),
         IntelligentESSNumber(entry, "price_delta_threshold", "Preis-Differenz Limit", 0.0, 20.0, 0.5, "ct", EntityCategory.CONFIG),
         IntelligentESSNumber(entry, "charge_delta_threshold", "Lade-Preisvorteil", 0.0, 15.0, 0.5, "ct", EntityCategory.CONFIG),

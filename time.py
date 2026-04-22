@@ -13,22 +13,42 @@ async def async_setup_entry(hass, entry, async_add_entities):
     ])
 
 class IntelligentESSTime(TimeEntity):
+    """Repräsentiert eine Zeit-Einstellung im Intelligent ESS."""
+
     def __init__(self, entry, key, name):
         self._entry = entry
         self._key = key
         self._attr_name = f"Intelligent ESS {name}"
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}}
+        # Wir erzwingen die technische Entity-ID für den Coordinator
+        self.entity_id = f"time.intelligent_ess_{key}"
 
     @property
     def native_value(self) -> time:
-        # Falls kein Wert vorhanden ist, nutzen wir Mitternacht als Default
-        time_str = self._entry.options.get(self._key, "00:00:00")
+        """Gibt den Wert aus den Optionen als echtes Zeit-Objekt zurück."""
+        val = self._entry.options.get(self._key, "00:00:00")
+        
+        # Falls es schon ein time-Objekt ist
+        if isinstance(val, time):
+            return val
+            
+        # Falls es ein String ist (Normalfall in HA Options)
         try:
-            return time.fromisoformat(time_str)
+            # Behandelt HH:MM:SS und HH:MM
+            return time.fromisoformat(val)
         except (ValueError, TypeError):
+            # Letzter Rettungsversuch: Falls nur "14:16" ohne Sekunden kommt
+            try:
+                parts = str(val).split(":")
+                if len(parts) >= 2:
+                    return time(hour=int(parts[0]), minute=int(parts[1]))
+            except Exception:
+                pass
             return time(0, 0)
 
     async def async_set_value(self, value: time) -> None:
+        """Speichert die gewählte Zeit sauber als ISO-String ab."""
+        # Wir speichern IMMER im Format HH:MM:SS, damit es beim Lesen keine Probleme gibt
         new_opts = {**self._entry.options, self._key: value.isoformat()}
         self.hass.config_entries.async_update_entry(self._entry, options=new_opts)

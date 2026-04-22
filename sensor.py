@@ -1,5 +1,6 @@
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity import EntityCategory
 from .const import DOMAIN
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -12,6 +13,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         IntelligentESSActionSensor(coordinator),
         IntelligentESSConsumptionSensor(coordinator),
+        IntelligentESSEventSensor(coordinator), 
         
         # Geändert: Nutzt jetzt den neuen Key 'rest_demand_daily'
         IntelligentESSGenericSensor(coordinator, "Restbedarf Heute", "rest_demand_daily", "kWh"),
@@ -128,3 +130,18 @@ class IntelligentESSForecastSensorNext(IntelligentESSBase):
     @property
     def native_value(self):
         return self.coordinator.data.get("forecast_next_hour", 0.0)
+
+class IntelligentESSEventSensor(IntelligentESSBase):
+    """Sensor für das Ereignis-Logbook (Diagnose-Kategorie)."""
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Intelligent ESS Letztes Ereignis"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_last_event"
+        self._attr_icon = "mdi:history"
+        # Dies gruppiert den Sensor in der UI unter 'Diagnose'
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self):
+        """Gibt das letzte Ereignis aus dem Coordinator zurück."""
+        return self.coordinator.data.get("last_event", "Keine Ereignisse")

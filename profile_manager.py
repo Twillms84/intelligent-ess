@@ -92,7 +92,11 @@ class ProfileManager:
             db.setdefault(d, {}).setdefault(h, {})
             
             # Altwert aus DB oder Default
-            old_val = float(db[d][h].get(m, config_default_usage))
+            val_raw = db[d][h].get(m, config_default_usage)
+            if isinstance(val_raw, dict): # Falls wir versehentlich ein Dict erwischt haben
+                old_val = config_default_usage
+            else:
+                old_val = float(val_raw)
             
             # LERNEFFEKT: 70% Altwert, 30% neuer Messwert
             db[d][h][m] = round((old_val * 0.7) + (hourly_kwh_projection * 0.3), 3)
