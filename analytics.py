@@ -28,7 +28,7 @@ def get_raw_states(hass, config):
         "bat_soc": _get_val(config.get("battery_soc_sensor"))
     }
 
-async def update_analytics(hass, coordinator, config, current_states, deltas, house_kwh):
+async def update_forecasts_and_finances(hass, coordinator, config, current_now, deltas, house_kwh):
     """Berechnet Forecasts und Finanzen."""
     now = datetime.datetime.now()
     

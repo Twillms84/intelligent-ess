@@ -1,3 +1,51 @@
+import datetime
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+
+def calculate_strategy(options, hass_states):
+    """
+    Zentrale Entscheidungslogik. 
+    Wird vom Coordinator jede Minute aufgerufen.
+    """
+    try:
+        now = datetime.datetime.now().time()
+        
+        # 1. Timer aus den Hass-States auslesen
+        # (Hier musst du sicherstellen, dass die Entity-IDs zu deinen Helfern passen)
+        def is_timer_active(start_key, end_key):
+            start_time = options.get(start_key)
+            end_time = options.get(end_key)
+            if not start_time or not end_time:
+                return False
+            
+            # Umwandlung der Strings in Zeit-Objekte
+            try:
+                s = datetime.time(*map(int, start_time.split(':')[:2]))
+                e = datetime.time(*map(int, end_time.split(':')[:2]))
+                if s <= e:
+                    return s <= now <= e
+                else: # Über Mitternacht
+                    return now >= s or now <= e
+            except:
+                return False
+
+        # 2. Prioritäten prüfen
+        # Prio 1: Laden (SmartLoader)
+        if is_timer_active("charge_start_time", "charge_end_time"):
+            return "LADEN", "SmartLoader aktiv (Timer)", False
+
+        # Prio 2: Sperren (SmartHolder / Entladestopp)
+        if is_timer_active("hold_start_time", "hold_end_time"):
+            return "SPERRE", "SmartHolder aktiv (Timer)", True
+
+        # Prio 3: Standard (Normalbetrieb)
+        return "AUTO", "Normalbetrieb (PV/Batterie)", False
+
+    except Exception as e:
+        _LOGGER.error("Fehler im Scheduler: %s", e)
+        return "AUTO", f"Fehler: {e}", False
+        
 async def _async_update_data(self):
         """Zentraler Update-Zyklus."""
         try:
