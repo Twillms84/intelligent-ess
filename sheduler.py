@@ -4,126 +4,69 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 def calculate_strategy(options, hass_states):
-    """
-    Zentrale Entscheidungslogik. 
-    Wird vom Coordinator jede Minute aufgerufen.
-    """
+    """Zentrale Entscheidungslogik für Timer und Strategie."""
     try:
         now = datetime.datetime.now().time()
-        
-        # 1. Timer aus den Hass-States auslesen
-        # (Hier musst du sicherstellen, dass die Entity-IDs zu deinen Helfern passen)
-        def is_timer_active(start_key, end_key):
-            start_time = options.get(start_key)
-            end_time = options.get(end_key)
-            if not start_time or not end_time:
-                return False
+
+        def get_time_from_config(key):
+            """Holt die Zeit aus der Config."""
+            val = options.get(key)
+            if not val:
+                return None
+            return val
+
+        def is_in_time_range(start_key, end_key, active_key, label):
+            """Prüft, ob der Schalter AN ist UND die aktuelle Uhrzeit im Slot liegt."""
+            # 1. SCHALTER PRÜFEN: Ist der Slot über das Dashboard eingeschaltet?
+            is_enabled = options.get(active_key, False)
+            if not is_enabled:
+                return False # Schalter aus -> Slot ignorieren
+
+            # 2. ZEIT PRÜFEN
+            start_str = get_time_from_config(start_key)
+            end_str = get_time_from_config(end_key)
             
-            # Umwandlung der Strings in Zeit-Objekte
+            if not start_str or not end_str:
+                return False
+                
             try:
-                s = datetime.time(*map(int, start_time.split(':')[:2]))
-                e = datetime.time(*map(int, end_time.split(':')[:2]))
+                # Wir erwarten "HH:MM:SS" oder "HH:MM"
+                s_parts = list(map(int, start_str.split(':')[:2]))
+                e_parts = list(map(int, end_str.split(':')[:2]))
+                s = datetime.time(s_parts[0], s_parts[1])
+                e = datetime.time(e_parts[0], e_parts[1])
+                
+                # Falls die Zeiten gleich sind (z.B. 00:00 bis 00:00), ist der Slot inaktiv
+                if s == e:
+                    return False
+
+                is_active = False
                 if s <= e:
-                    return s <= now <= e
-                else: # Über Mitternacht
-                    return now >= s or now <= e
-            except:
+                    is_active = s <= now <= e
+                else: 
+                    is_active = now >= s or now <= e
+                
+                if is_active:
+                    _LOGGER.info("%s AKTIV: Schalter ist AN und Zeit passt (%s bis %s, Jetzt: %s)", label, start_str, end_str, now.strftime('%H:%M'))
+                return is_active
+
+            except Exception as ex:
+                _LOGGER.error("Fehler beim Zeit-Parsen (%s/%s): %s", start_key, end_key, ex)
                 return False
 
-        # 2. Prioritäten prüfen
-        # Prio 1: Laden (SmartLoader)
-        if is_timer_active("charge_start_time", "charge_end_time"):
-            return "LADEN", "SmartLoader aktiv (Timer)", False
+        # --- 1. PRÜFUNG: LADEN (Slot 1 & 2) ---
+        # Hier nutzen wir nun exakt die Namen aus deiner switch.py!
+        if is_in_time_range("man_charge_s1_start", "man_charge_s1_end", "man_charge_s1_enabled", "LADE-SLOT 1") or \
+           is_in_time_range("man_charge_s2_start", "man_charge_s2_end", "man_charge_s2_enabled", "LADE-SLOT 2"):
+            return "LADEN", "Lade-Timer aktiv", False
 
-        # Prio 2: Sperren (SmartHolder / Entladestopp)
-        if is_timer_active("hold_start_time", "hold_end_time"):
-            return "SPERRE", "SmartHolder aktiv (Timer)", True
+        # --- 2. PRÜFUNG: SPERRE (Slot 1) ---
+        if is_in_time_range("man_hold_s1_start", "man_hold_s1_end", "man_hold_s1_enabled", "SPERR-SLOT 1"):
+            return "SPERRE", "Entladesperre aktiv", True
 
-        # Prio 3: Standard (Normalbetrieb)
+        # --- 3. STANDARD: AUTO ---
         return "AUTO", "Normalbetrieb (PV/Batterie)", False
 
     except Exception as e:
-        _LOGGER.error("Fehler im Scheduler: %s", e)
-        return "AUTO", f"Fehler: {e}", False
-        
-async def _async_update_data(self):
-        """Zentraler Update-Zyklus."""
-        try:
-            # 1. Setup & Datenladen
-            if not getattr(self, '_savings_loaded', False):
-                await self.hass.async_add_executor_job(self._load_savings)
-                self._savings_loaded = True
-
-            config = {**self.entry.data, **self.entry.options}
-            current = self._get_raw_states(config)
-            if not current: return self.data
-
-            now = dt_util.now()
-
-            # 2. FINANZEN & VERBRAUCH
-            if self.last_readings:
-                deltas = {k: current[k] - self.last_readings[k] for k in current if k in self.last_readings}
-                if not any(v < -0.001 or v > 1.2 for v in deltas.values()):
-                    house_kwh = max(0, deltas["pv"] + deltas["grid_in"] + deltas["bat_dis"] - deltas["grid_out"] - deltas["bat_chg"])
-                    self.data["house_kw"] = round(house_kwh * 60, 3)
-                    self.data["samples"].append(house_kwh)
-                    self._update_finances(config, deltas, house_kwh)
-
-            # 3. FORECASTS (Wiederhergestellt)
-            rest_daily = await self.hass.async_add_executor_job(lambda: self.profile_manager.get_daily_rest_demand(now))
-            cur_rem, next_full = await self.hass.async_add_executor_job(lambda: self.profile_manager.get_hour_forecasts(now))
-            
-            prices = await self._get_tibber_prices()
-            
-            self.data.update({
-                "rest_demand_daily": round(rest_daily, 2),
-                "forecast_current_hour": round(cur_rem, 3),
-                "forecast_next_hour": round(next_full, 3),
-                "prices": prices,
-                "morning_reserve": round(rest_daily * 0.2, 2)
-            })
-
-            # 4. STRATEGIE ÜBER SCHEDULER BERECHNEN
-            strat, msg, lock_needed = calculate_strategy(self.entry.options, self.hass.states)
-            
-            self.data["strat"] = strat
-            self.data["strat_msg"] = msg
-            self.data["discharge_lock_active"] = lock_needed
-            self.data["fahrplan"] = f"Status: {strat} | Bedarf: {round(rest_daily, 1)}kWh"
-
-            # 5. HARDWARE-STEUERUNG (Sicher & Bus-schonend)
-            limit_entity = config.get("wr_limit_entity")
-            if limit_entity:
-                unlock_val = float(config.get("wr_unlock_value", 100.0))
-                target_limit = 0.0 if lock_needed else unlock_val
-                
-                ent_state = self.hass.states.get(limit_entity)
-                if ent_state and ent_state.state not in ['unknown', 'unavailable', 'none']:
-                    try:
-                        current_val = float(ent_state.state)
-                        if abs(current_val - target_limit) > 0.1:
-                            await self.hass.services.async_call(
-                                "number", "set_value", 
-                                {"entity_id": limit_entity, "value": target_limit}
-                            )
-                            _LOGGER.info("WR-Limit angepasst: %s -> %s (%s)", current_val, target_limit, strat)
-                    except ValueError: pass
-
-            # 6. STATUS-EVENT LOGGING
-            if strat != self.data.get("last_active_strat"):
-                self.data["last_event"] = f"[{now.strftime('%H:%M:%S')}] {strat}: {msg}"
-                self.data["last_active_strat"] = strat
-
-            # 7. SPEICHERN & LEARNING
-            if len(self.data["samples"]) >= 15:
-                samples_to_save = list(self.data["samples"])
-                self.data["samples"] = []
-                await self.hass.async_add_executor_job(self.profile_manager.update_profile, now, samples_to_save, config)
-                await self.hass.async_add_executor_job(self._save_savings_to_disk)
-
-            self.last_readings = current
-            return self.data
-
-        except Exception as e:
-            _LOGGER.error("Schwerer Fehler im Coordinator-Update: %s", e)
-            raise UpdateFailed(f"Update fehlgeschlagen: {e}")
+        _LOGGER.error("Schwerer Fehler im Scheduler: %s", e)
+        return "AUTO", f"Scheduler Fehler: {e}", False

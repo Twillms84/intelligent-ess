@@ -8,7 +8,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .sheduler import calculate_strategy
-from .analytics import update_forecasts_and_finances, get_raw_states
+from .analytics import update_forecasts_and_finances, get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,7 +53,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             # 2. DATEN-AKQUISE (Jetzt über analytics.py)
             config = {**self.entry.data, **self.entry.options}
             current = get_raw_states(self.hass, config)
-            if not current: return self.data
+            if not current: 
+                return self.data
+                
             now = dt_util.now()
 
             # 3. VERBRAUCHS-BERECHNUNG (Deltas für Finanzen)
@@ -67,14 +69,21 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                     self.data["house_kw"] = round(house_kwh * 60, 3)
                     self.data["samples"].append(house_kwh)
 
-            # 4. ANALYTICS (Übergabe der deltas & house_kwh für Ersparnis-Berechnung)
+            # 4. ANALYTICS (Angepasste Parameterübergabe!)
+            # Wir übergeben explizit den profile_manager, current_savings und current_strat
             analytics_results = await update_forecasts_and_finances(
-                self.hass, self, config, now, deltas, house_kwh
+                self.hass, 
+                self.profile_manager, 
+                config, 
+                deltas, 
+                house_kwh, 
+                self.data["savings"], 
+                self.data.get("strat")
             )
             self.data.update(analytics_results)
 
-            # 5. SCHEDULER
-            strat, msg, lock_needed = calculate_strategy(self.entry.options, self.hass.states)
+            # 5. SCHEDULER (Wir nutzen 'config' statt nur 'options', damit alle Keys gefunden werden)
+            strat, msg, lock_needed = calculate_strategy(config, self.hass.states)
             self.data.update({
                 "strat": strat,
                 "strat_msg": msg,
@@ -89,7 +98,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             if len(self.data["samples"]) >= 15:
                 samples = list(self.data["samples"])
                 self.data["samples"] = []
-                await self.hass.async_add_executor_job(self.profile_manager.update_profile, now, samples, config)
+                await self.hass.async_add_executor_job(self.profile_manager.update_profile, now, samples)
                 await self.hass.async_add_executor_job(self._save_savings_to_disk)
 
             self.last_readings = current
@@ -101,20 +110,36 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
     # --- HELPER METHODEN ---
     async def _handle_hardware_control(self, config, lock_needed, strat):
+        # 1. Haupt-Limit (Sperre/Freigabe)
         limit_entity = config.get("wr_limit_entity")
-        if not limit_entity: return
-        
-        target_limit = 0.0 if lock_needed else float(config.get("wr_unlock_value", 100.0))
-        ent_state = self.hass.states.get(limit_entity)
-        
-        if ent_state and ent_state.state not in ['unknown', 'unavailable', 'none']:
-            try:
-                if abs(float(ent_state.state) - target_limit) > 0.1:
-                    await self.hass.services.async_call(
-                        "number", "set_value", {"entity_id": limit_entity, "value": target_limit}
-                    )
-                    _LOGGER.info("WR-Limit -> %s (%s)", target_limit, strat)
-            except ValueError: pass
+        if limit_entity:
+            target_limit = 0.0 if lock_needed else float(config.get("wr_unlock_value", 100.0))
+            ent_state = self.hass.states.get(limit_entity)
+            
+            if ent_state and ent_state.state not in ['unknown', 'unavailable', 'none']:
+                try:
+                    if abs(float(ent_state.state) - target_limit) > 0.1:
+                        await self.hass.services.async_call(
+                            "number", "set_value", {"entity_id": limit_entity, "value": target_limit}
+                        )
+                        _LOGGER.info("WR-Limit angepasst -> %s (Grund: %s)", target_limit, strat)
+                except ValueError: 
+                    pass
+
+        # 2. Spezifische Lade-Steuerung (Falls aktiv)
+        # Hier prüfen wir, ob wir gerade im Modus "LADEN" sind
+        charge_control_entity = config.get("battery_charge_switch") # Musst du ggf. in der Config anlegen
+        if charge_control_entity:
+            if strat == "LADEN":
+                # Beispiel: Schalter einschalten oder Ladewert setzen
+                await self.hass.services.async_call(
+                    "switch", "turn_on", {"entity_id": charge_control_entity}
+                )
+            else:
+                # Sicherstellen, dass Laden aus ist, wenn nicht im Lade-Slot
+                await self.hass.services.async_call(
+                    "switch", "turn_off", {"entity_id": charge_control_entity}
+                )
 
     def _load_savings(self):
         if os.path.exists(self.savings_path):
@@ -122,10 +147,12 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 with open(self.savings_path, 'r') as f:
                     saved = json.load(f)
                     self.data["savings"].update(saved)
-            except Exception: pass
+            except Exception: 
+                pass
 
     def _save_savings_to_disk(self):
         try:
             with open(self.savings_path, 'w') as f:
                 json.dump(self.data["savings"], f)
-        except Exception: pass
+        except Exception: 
+            pass
