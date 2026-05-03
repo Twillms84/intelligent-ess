@@ -5,6 +5,7 @@ from homeassistant.helpers import selector
 from homeassistant.core import callback
 from .const import DOMAIN
 
+
 _LOGGER = logging.getLogger(__name__)
 
 class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -28,7 +29,10 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("tibber_export_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required("battery_soc_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="battery")),
                 vol.Required("solar_forecast_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                
+                vol.Optional("pv_forecast_tomorrow_entity"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+
                 # Hardware Steuerung
                 vol.Required("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
                 vol.Required("wr_limit_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),

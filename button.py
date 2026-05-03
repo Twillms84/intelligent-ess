@@ -1,5 +1,6 @@
 import logging
 import json
+import asyncio # <-- NEU: Für die Warteschleife
 from datetime import timedelta
 from homeassistant.components.button import ButtonEntity
 from homeassistant.util import dt as dt_util
@@ -36,63 +37,104 @@ class IntelligentESSKIButton(ButtonEntity):
         ki_text = "Analyse läuft..."
         
         try:
-            # 1. Alle Daten & Optionen laden
-            options = self.entry.options
+            # 1. Alle Daten laden
+            config = {**self.entry.data, **self.entry.options}
             data = self.coordinator.data if self.coordinator.data else {}
             readings = self.coordinator.last_readings if self.coordinator.last_readings else {}
             
-            # --- STATISCHE PARAMETER AUS DEINEM CONFIG-FLOW ---
-            cap_kwh = options.get("battery_capacity", 15.0)
-            buffer = options.get("safety_buffer", 1.3)
-            min_soc = options.get("min_soc_reserve", 10.0)
-            hold_threshold = options.get("charge_delta_threshold", 10.0)
+            # --- STATISCHE PARAMETER ---
+            cap_kwh = config.get("battery_capacity", 15.0)
+            min_soc = config.get("min_soc_reserve", 10.0)
+            hold_threshold = config.get("charge_delta_threshold", 10.0)
             
             # --- DYNAMISCHE WERTE ---
             soc_now = readings.get("bat_soc", 0)
             rest_demand = round(data.get("rest_demand_daily", 0), 2)
+            solar_remaining = data.get("solar_remaining", 0)
+            prices = data.get("prices", [])
             
-            # Solar-Rest & Preise (Zentral aus analytics holen)
-            from .analytics import get_solar_forecast, get_tibber_prices
-            solar_remaining = get_solar_forecast(self.hass, options)
-            prices = get_tibber_prices(self.hass, options)
+            # --- NEU: KI Zusammenfassung aus Analytics holen ---
+            ai_summary = data.get("ai_price_summary", {})
+            min_p = ai_summary.get("min_price", 0)
+            min_t = ai_summary.get("min_time", "00:00")
+            max_p = ai_summary.get("max_price", 0)
+            max_t = ai_summary.get("max_time", "00:00")
+            avg_p = ai_summary.get("avg_price", 0)
             
-            # Preise aufbereiten
-            price_list = [f"{dt_util.parse_datetime(p['start_time']).strftime('%H:%M')}:{round(p['total']*100,1)}ct" for p in prices[:12]]
-            price_summary = " | ".join(price_list)
+            # --- PREISE AUFBEREITEN (Für Kontext) ---
+            is_15_min = len(prices) > 48
+            step = 4 if is_15_min else 1 
+            items_12h = 48 if is_15_min else 12 
+            
+            price_list = []
+            if prices:
+                for p in prices[:items_12h:step]:
+                    try:
+                        time_str = dt_util.parse_datetime(p['start_time']).strftime('%H:%M')
+                        price_list.append(f"{time_str}:{round(p['total']*100,1)}ct")
+                    except Exception:
+                        pass
+            
+            price_summary = " | ".join(price_list) if price_list else "FEHLER: Keine Preisdaten gefunden!"
 
-            # 2. DER PRÄZISE PROMPT
+            # 2. DER VERBESSERTE PROMPT (Nutzt jetzt die vorgekauten Werte!)
             prompt = (
                 f"ANALYSE-AUFTRAG INTELLIGENT ESS:\n"
                 f"- Akku: {soc_now}% von {cap_kwh}kWh (Min-Reserve: {min_soc}%)\n"
                 f"- Solar-Rest: {solar_remaining}kWh | Bedarf 24h: {rest_demand}kWh\n"
-                f"- Preise (12h): {price_summary}\n"
+                f"- Preis-Eckdaten: Günstigster Preis {min_p}ct um {min_t} Uhr. Teuerster Preis {max_p}ct um {max_t} Uhr. Schnitt: {avg_p}ct.\n"
+                f"- Verlauf (12h): {price_summary}\n"
                 f"- Ersparnis-Limit: {hold_threshold}ct\n\n"
                 "AUFGABEN & LOGIK:\n"
                 "1. LADE-CHECK (Netzlade-Optimierung):\n"
                 "Reicht der Akku + Solar-Rest, um den Hausbedarf durch die Nacht zu decken?\n"
-                "-> Wenn NEIN: Setze \"charge\": \"YES\". Suche in der Preisliste den ABSOLUT GÜNSTIGSTEN Zeitpunkt und setze diesen als \"charge_start\". Schätze die \"duration\" in Stunden, um das Defizit auszugleichen.\n\n"
+                f"-> Wenn NEIN: Setze \"charge\": \"YES\". Der Startzeitpunkt MUSS {min_t} Uhr sein. Schätze die \"duration\" in Stunden, um das Defizit auszugleichen.\n\n"
                 "2. SPERR-CHECK (Arbitrage / Preisspitzen-Vermeidung):\n"
-                f"Finde die teuerste Preisspitze in der Liste. Ist diese mindestens {hold_threshold}ct teurer als der günstigste Preis?\n"
+                f"Ist der teuerste Preis ({max_p}ct) mindestens {hold_threshold}ct teurer als der günstigste ({min_p}ct)?\n"
                 "-> Wenn JA und der Akku droht vorher leer zu laufen: Setze \"hold\": \"YES\".\n"
-                "-> WICHTIG: Setze \"hold_start\" auf die Zeit VOR der Spitze (um den Akku aufzusparen) und \"hold_end\" EXAKT auf den BEGINN der Preisspitze. (Beispiel: Spitze ist um 07:00 Uhr -> hold_end: \"07:00\", damit das Haus ab 07:00 Uhr den Akku nutzen kann statt teuren Netzstrom).\n\n"
+                f"-> WICHTIG: Setze \"hold_start\" auf eine Zeit VOR {max_t} Uhr (um den Akku aufzusparen) und \"hold_end\" EXAKT auf {max_t} Uhr.\n\n"
                 "ANTWORTE EXAKT IN DIESEM FORMAT:\n"
                 "Kurze Analyse.\n"
                 "RESULT: {"
                 "\"charge\": \"YES/NO\", \"charge_start\": \"HH:MM\", \"duration\": 2, "
                 "\"hold\": \"YES/NO\", \"hold_start\": \"HH:MM\", \"hold_end\": \"HH:MM\", "
-                "\"reason\": \"Kurze Begründung mit Preisangaben\"}"
+                "\"reason\": \"Kurze Begründung\"}"
             )
 
-            # 3. KI-SERVICE AUFRUFEN (Das fehlte in deinem Code!)
-            result = await self.hass.services.async_call(
-                "conversation", "process", 
-                # ACHTUNG: Prüfe ob "conversation.google_ai_conversation_2" noch dein korrekter Agent ist!
-                {"text": prompt, "agent_id": "conversation.google_ai_conversation_2"}, 
-                blocking=True, return_response=True
-            )
+            # 3. KI-SERVICE AUFRUFEN MIT RETRY-MECHANISMUS (Anti-Überlastung)
+            max_retries = 3
+            retry_delay = 5
+            full_text = ""
             
-            # Die Antwort der KI extrahieren
-            full_text = result["response"]["speech"]["plain"]["speech"]
+            for attempt in range(max_retries):
+                try:
+                    result = await self.hass.services.async_call(
+                        "conversation", "process", 
+                        {"text": prompt, "agent_id": "conversation.google_ai_conversation_2"}, 
+                        blocking=True, return_response=True
+                    )
+                    
+                    current_text = result["response"]["speech"]["plain"]["speech"]
+                    
+                    # Abfangen der typischen Google-Limit-Meldungen
+                    if "high demand" in current_text or "Sorry, I had a problem" in current_text:
+                        if attempt < max_retries - 1:
+                            _LOGGER.warning("Gemini API überlastet (Versuch %s/%s). Warte %s Sekunden...", attempt + 1, max_retries, retry_delay)
+                            await asyncio.sleep(retry_delay)
+                            continue 
+                        else:
+                            full_text = current_text
+                            break
+                    
+                    full_text = current_text
+                    break
+                    
+                except Exception as inner_e:
+                    if attempt < max_retries - 1:
+                        _LOGGER.warning("Verbindungsfehler zur KI (Versuch %s/%s). Warte %s Sekunden...", attempt + 1, max_retries, retry_delay)
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise inner_e
 
             # 4. ANTWORT VERARBEITEN (JSON extrahieren)
             if "RESULT:" in full_text:
@@ -111,6 +153,8 @@ class IntelligentESSKIButton(ButtonEntity):
                     st_hour = int(st_time.split(":")[0])
                     dur = int(cmd.get("duration", 3))
                     new_opts["man_charge_s1_end"] = f"{(st_hour + dur) % 24:02d}:00:00"
+                    
+                    new_opts["man_charge_s1_enabled"] = True
                     _LOGGER.info("KI setzt LADE-TIMER: %s für %s Stunden", st_time, dur)
 
                 # --- LOGIK FÜR SPERRE (Hold Slot 1) ---
@@ -118,18 +162,19 @@ class IntelligentESSKIButton(ButtonEntity):
                     h_start = cmd.get("hold_start", "07:00")
                     h_end = cmd.get("hold_end", "09:00")
                     
-                    # Format-Fixing HH:MM:SS
                     if len(h_start) == 5: h_start += ":00"
                     if len(h_end) == 5: h_end += ":00"
                     
                     new_opts["man_hold_s1_start"] = h_start
                     new_opts["man_hold_s1_end"] = h_end
+                    
+                    new_opts["man_hold_s1_enabled"] = True
                     _LOGGER.info("KI setzt SPERRE: %s bis %s", h_start, h_end)
 
                 new_opts["ki_reason"] = cmd.get("reason", "Strategie aktualisiert")
                 self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
             else:
-                ki_text = full_text # Falls die KI sich nicht ans Format gehalten hat
+                ki_text = full_text
 
         except Exception as e:
             _LOGGER.error("Fehler im KI-Button: %s", e)
