@@ -15,7 +15,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSConsumptionSensor(coordinator),
         IntelligentESSEventSensor(coordinator), 
         
-        # Geändert: Nutzt jetzt den neuen Key 'rest_demand_daily'
+        # Nutzt den Key 'rest_demand_daily'
         IntelligentESSGenericSensor(coordinator, "Restbedarf Heute", "rest_demand_daily", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Nachtreserve", "morning_reserve", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Fahrplan", "fahrplan", None),
@@ -31,7 +31,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSSavingsSensor(coordinator, "Gesamt-Ersparnis", "total"),
 
         IntelligentESSTodayProfileSensor(coordinator),
-        IntelligentESSAutarkyTimeSensor(coordinator, entry),
+        IntelligentESSAutarkyTimeSensor(coordinator), # <- Geändert: Braucht nur noch den Coordinator!
     ])
 
 class IntelligentESSBase(CoordinatorEntity, SensorEntity):
@@ -105,7 +105,6 @@ class IntelligentESSSavingsSensor(IntelligentESSBase):
         savings_dict = self.coordinator.data.get("savings", {})
         return round(float(savings_dict.get(self._key, 0.0)), 2)
 
-
 # --- NEU: Aufgeteilte Forecast-Sensoren ---
 
 class IntelligentESSForecastSensorCurrent(IntelligentESSBase):
@@ -149,22 +148,17 @@ class IntelligentESSEventSensor(IntelligentESSBase):
         """Gibt das letzte Ereignis aus dem Coordinator zurück."""
         return self.coordinator.data.get("last_event", "Keine Ereignisse")
 
-class IntelligentESSAutarkyTimeSensor(SensorEntity):
+class IntelligentESSAutarkyTimeSensor(IntelligentESSBase):
     """Sensor, der die Uhrzeit der voraussichtlichen Autarkie am morgigen Tag anzeigt."""
     
-    def __init__(self, coordinator, entry):
-        self.coordinator = coordinator
-        self.entry = entry
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
         self._attr_name = "Autarkie Start Morgen"
-        self._attr_unique_id = f"{entry.entry_id}_autarky_time_tomorrow"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_autarky_time_tomorrow"
         self._attr_icon = "mdi:solar-power"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "Intelligent ESS",
-        }
 
     @property
-    def state(self):
+    def native_value(self):
         """Gibt die berechnete Uhrzeit (z.B. '08:00') oder 'Nicht erreicht' zurück."""
         if not self.coordinator.data:
             return "Warte auf Daten..."
@@ -178,16 +172,6 @@ class IntelligentESSAutarkyTimeSensor(SensorEntity):
         return {
             "pv_forecast_tomorrow_kwh": self.coordinator.data.get("pv_tomorrow_total", 0.0)
         }
-    
-    @property
-    def should_poll(self) -> bool:
-        return False
-
-    async def async_added_to_hass(self) -> None:
-        """Wenn die Entität hinzugefügt wird, Coordinator-Updates abonnieren."""
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
 
 class IntelligentESSTodayProfileSensor(IntelligentESSBase):
     """Sensor, der den Tagesbedarf als State und das 24h-Profil als Attribut hat."""

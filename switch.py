@@ -8,19 +8,28 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ESSConfigSwitch(entry, "man_charge_s1_enabled", "Laden Slot 1", "mdi:battery-plus"),
         ESSConfigSwitch(entry, "man_charge_s2_enabled", "Laden Slot 2", "mdi:battery-plus"),
         ESSConfigSwitch(entry, "man_hold_s1_enabled", "Entladesperre", "mdi:battery-lock"),
-        # Konfiguration
+        
+        # Konfiguration (Wird im HA-Dashboard unter Diagnose/Konfig gruppiert)
         ESSConfigSwitch(entry, "auto_charge_enabled", "Ladeautomatik aktiv", "mdi:robot", EntityCategory.CONFIG),
     ])
 
 class ESSConfigSwitch(SwitchEntity):
+    _attr_has_entity_name = True # Sorgt für saubere, nicht-redundante Namen in HA
+
     def __init__(self, entry, key, name, icon, category=None):
         self._entry = entry
         self._key = key
-        self._attr_name = f"Intelligent ESS {name}"
+        self._attr_name = name # "Intelligent ESS" wird durch das Device-Info davor gesetzt
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_icon = icon
-        self._attr_entity_category = category
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": "Intelligent ESS"}
+        
+        if category:
+            self._attr_entity_category = category
+            
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)}, 
+            "name": "Intelligent ESS"
+        }
 
     @property
     def is_on(self):

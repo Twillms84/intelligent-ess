@@ -8,7 +8,8 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .sheduler import calculate_strategy
-from .analytics import update_forecasts_and_finances, get_raw_states, get_tibber_prices, get_solar_forecast
+# WICHTIG: Hier 'async_get_raw_states' importieren!
+from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,7 +68,8 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
             # 3. DATEN-AKQUISE
             config = {**self.entry.data, **self.entry.options}
-            current = get_raw_states(self.hass, config)
+            # WICHTIG: Hier await nutzen!
+            current = await async_get_raw_states(self.hass, config)
             if not current: 
                 return self.data
                 

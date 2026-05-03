@@ -1,36 +1,72 @@
 import logging
 import json
-import asyncio # <-- NEU: Für die Warteschleife
+import asyncio
 from datetime import timedelta
 from homeassistant.components.button import ButtonEntity
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import dt as dt_util
-from .analytics import get_solar_forecast, get_tibber_prices 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Setzt den Button-Eintrag auf."""
+    """Setzt die Buttons für das ESS auf."""
     if DOMAIN not in hass.data or entry.entry_id not in hass.data[DOMAIN]:
         _LOGGER.error("Coordinator noch nicht bereit für Button-Setup")
         return False
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([IntelligentESSKIButton(coordinator, entry)])
+    
+    async_add_entities([
+        IntelligentESSUpdateButton(coordinator, entry),
+        IntelligentESSTrainAIButton(coordinator, entry),
+        IntelligentESSKIButton(coordinator, entry),
+    ])
     return True
 
-class IntelligentESSKIButton(ButtonEntity):
-    """KI-Strategie Button mit automatischer Fahrplan-Extraktion."""
-    def __init__(self, coordinator, entry):
+class IntelligentESSBaseButton(ButtonEntity):
+    """Basis-Klasse für unsere Buttons."""
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry, name, icon, unique_id_suffix, category=None):
         self.coordinator = coordinator
         self.entry = entry
-        self._attr_name = "Intelligent ESS KI Strategie-Check"
-        self._attr_unique_id = f"{entry.entry_id}_ki_button"
-        self._attr_icon = "mdi:robot-vacuum-variant"
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_unique_id = f"{entry.entry_id}_{unique_id_suffix}"
+        self._attr_entity_category = category
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
             "name": "Intelligent ESS",
         }
+
+class IntelligentESSUpdateButton(IntelligentESSBaseButton):
+    """Button, um sofort neue Daten von Tibber und Solar-Forecast zu laden."""
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "Daten jetzt aktualisieren", "mdi:update", "update_btn", EntityCategory.CONFIG)
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Manuelles Update der ESS-Daten angefordert.")
+        await self.coordinator.async_request_refresh()
+
+class IntelligentESSTrainAIButton(IntelligentESSBaseButton):
+    """Button, um das KI-Verbrauchsprofil sofort neu zu berechnen."""
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "KI-Profil neu anlernen", "mdi:brain", "train_ai_btn", EntityCategory.CONFIG)
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Manuelles Neuanlernen des KI-Profils gestartet...")
+        if hasattr(self.coordinator, "profile_manager"):
+            await self.coordinator.profile_manager.async_update_learning_profile()
+            await self.coordinator.async_request_refresh()
+        else:
+            _LOGGER.warning("ProfileManager im Coordinator nicht gefunden. Anlernen fehlgeschlagen.")
+
+class IntelligentESSKIButton(IntelligentESSBaseButton):
+    """KI-Strategie Button mit automatischer Fahrplan-Extraktion."""
+    def __init__(self, coordinator, entry):
+        # Ohne EntityCategory, damit er als primäre Aktion auf dem Dashboard erscheint
+        super().__init__(coordinator, entry, "KI Strategie-Check", "mdi:robot-vacuum-variant", "ki_button", None)
 
     async def async_press(self) -> None:
         _LOGGER.info("--- KI-STRATEGIE-CHECK START ---")
@@ -40,7 +76,7 @@ class IntelligentESSKIButton(ButtonEntity):
             # 1. Alle Daten laden
             config = {**self.entry.data, **self.entry.options}
             data = self.coordinator.data if self.coordinator.data else {}
-            readings = self.coordinator.last_readings if self.coordinator.last_readings else {}
+            readings = self.coordinator.last_readings if hasattr(self.coordinator, 'last_readings') else {}
             
             # --- STATISCHE PARAMETER ---
             cap_kwh = config.get("battery_capacity", 15.0)
@@ -53,7 +89,7 @@ class IntelligentESSKIButton(ButtonEntity):
             solar_remaining = data.get("solar_remaining", 0)
             prices = data.get("prices", [])
             
-            # --- NEU: KI Zusammenfassung aus Analytics holen ---
+            # --- KI Zusammenfassung aus Analytics holen ---
             ai_summary = data.get("ai_price_summary", {})
             min_p = ai_summary.get("min_price", 0)
             min_t = ai_summary.get("min_time", "00:00")
@@ -77,7 +113,7 @@ class IntelligentESSKIButton(ButtonEntity):
             
             price_summary = " | ".join(price_list) if price_list else "FEHLER: Keine Preisdaten gefunden!"
 
-            # 2. DER VERBESSERTE PROMPT (Nutzt jetzt die vorgekauten Werte!)
+            # 2. DER VERBESSERTE PROMPT
             prompt = (
                 f"ANALYSE-AUFTRAG INTELLIGENT ESS:\n"
                 f"- Akku: {soc_now}% von {cap_kwh}kWh (Min-Reserve: {min_soc}%)\n"
@@ -101,7 +137,7 @@ class IntelligentESSKIButton(ButtonEntity):
                 "\"reason\": \"Kurze Begründung\"}"
             )
 
-            # 3. KI-SERVICE AUFRUFEN MIT RETRY-MECHANISMUS (Anti-Überlastung)
+            # 3. KI-SERVICE AUFRUFEN MIT RETRY-MECHANISMUS
             max_retries = 3
             retry_delay = 5
             full_text = ""
@@ -119,13 +155,14 @@ class IntelligentESSKIButton(ButtonEntity):
                     # Abfangen der typischen Google-Limit-Meldungen
                     if "high demand" in current_text or "Sorry, I had a problem" in current_text:
                         if attempt < max_retries - 1:
-                            _LOGGER.warning("Gemini API überlastet (Versuch %s/%s). Warte %s Sekunden...", attempt + 1, max_retries, retry_delay)
+                            _LOGGER.warning("Gemini API überlastet/Fehler (Versuch %s/%s). Warte %s Sekunden...", attempt + 1, max_retries, retry_delay)
                             await asyncio.sleep(retry_delay)
                             continue 
                         else:
                             full_text = current_text
                             break
                     
+                    # Erfolg!
                     full_text = current_text
                     break
                     
@@ -183,5 +220,5 @@ class IntelligentESSKIButton(ButtonEntity):
         # 5. BENACHRICHTIGUNG SENDEN
         await self.hass.services.async_call(
             "persistent_notification", "create",
-            {"title": "Intelligent ESS", "message": f"🤖 {ki_text}", "notification_id": "ess_ki"}
+            {"title": "Intelligent ESS KI", "message": f"🤖 {ki_text}", "notification_id": "ess_ki"}
         )

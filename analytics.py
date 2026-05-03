@@ -5,8 +5,11 @@ from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
-def get_raw_states(hass, config):
-    """Holt alle aktuellen Sensorwerte sicher ab."""
+async def async_get_raw_states(hass, config):
+    """
+    Holt alle aktuellen Sensorwerte sicher ab.
+    Zieht PV, Netz und Batterie dynamisch aus dem Home Assistant Energy Dashboard!
+    """
     def _get_val(eid):
         if not eid: return 0.0
         s = hass.states.get(eid)
@@ -15,18 +18,41 @@ def get_raw_states(hass, config):
             except ValueError: return 0.0
         return 0.0
 
-    pv_ids = config.get("pv_production_sensor", [])
-    if isinstance(pv_ids, str) and pv_ids: 
-        pv_ids = [pv_ids]
-    pv_total = sum(_get_val(i) for i in pv_ids if i)
+    pv_ids = []
+    grid_in_ids = []
+    grid_out_ids = []
+    bat_chg_ids = []
+    bat_dis_ids = []
+
+    try:
+        # Hier zapfen wir das offizielle Energy Dashboard an
+        from homeassistant.components.energy.data import async_get_manager
+        manager = await async_get_manager(hass)
+        
+        if manager and manager.data:
+            prefs = manager.data
+            for source in prefs.get("energy_sources", []):
+                stype = source.get("type")
+                if stype == "solar":
+                    pv_ids.append(source.get("stat_energy_from"))
+                elif stype == "grid":
+                    for flow in source.get("flow_from", []):
+                        grid_in_ids.append(flow.get("stat_energy_from"))
+                    for flow in source.get("flow_to", []):
+                        grid_out_ids.append(flow.get("stat_energy_to"))
+                elif stype == "battery":
+                    bat_dis_ids.append(source.get("stat_energy_from"))
+                    bat_chg_ids.append(source.get("stat_energy_to"))
+    except Exception as e:
+        _LOGGER.warning("Fehler beim Auslesen des Energy Dashboards: %s", e)
 
     return {
-        "pv": pv_total,
-        "grid_in": _get_val(config.get("grid_consumption_sensor")),
-        "grid_out": _get_val(config.get("grid_export_sensor")),
-        "bat_chg": _get_val(config.get("bat_charge_sensor")),
-        "bat_dis": _get_val(config.get("bat_discharge_sensor")),
-        "bat_soc": _get_val(config.get("battery_soc_sensor"))
+        "pv": sum(_get_val(i) for i in pv_ids if i),
+        "grid_in": sum(_get_val(i) for i in grid_in_ids if i),
+        "grid_out": sum(_get_val(i) for i in grid_out_ids if i),
+        "bat_chg": sum(_get_val(i) for i in bat_chg_ids if i),
+        "bat_dis": sum(_get_val(i) for i in bat_dis_ids if i),
+        "bat_soc": _get_val(config.get("battery_soc_sensor")) # Kommt weiterhin aus deiner Config
     }
 
 def get_tibber_prices(hass, config):
@@ -97,7 +123,8 @@ def get_ai_price_summary(prices, hours_ahead=12):
 
 def get_solar_forecast(hass, config):
     """Holt den verbleibenden Solar-Ertrag für heute/den Restzeitraum."""
-    solar_entity = config.get("solar_forecast_sensor")
+    # GEÄNDERT auf den neuen einheitlichen Key aus config_flow.py!
+    solar_entity = config.get("pv_forecast_today_entity")
     if not solar_entity:
         return 0.0
     
@@ -118,8 +145,6 @@ def calculate_autarky_time_tomorrow(profile_manager, solar_forecast, config):
     Ermittelt die Uhrzeit am morgigen Tag, ab der die PV-Produktion
     voraussichtlich den Hausverbrauch übersteigt.
     """
-    # SICHERHEITS-CHECK: Ist solar_forecast überhaupt ein Dictionary (Stundenwerte)?
-    # Wenn es eine Zahl (float) ist, haben wir nur eine Summe und keine Stundenwerte!
     if not isinstance(solar_forecast, dict):
         return "Keine Stundenwerte"
 
@@ -148,10 +173,10 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
     """Zentrale Recheneinheit für Prognosen, Finanzen und KI-Daten."""
     now = datetime.datetime.now()
     
-    # 1. Config-Wert für Grundlast laden (aus deinem Config Flow)
+    # 1. Config-Wert für Grundlast laden
     def_usage = float(config.get("default_usage", 0.85))
 
-    # 2. Prognosen über ProfileManager abrufen (jetzt bis zum nächsten Morgen)
+    # 2. Prognosen über ProfileManager abrufen
     rest_demand = await hass.async_add_executor_job(
         profile_manager.get_daily_rest_demand, now, def_usage
     )
@@ -203,7 +228,7 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
     # Solar Forecast
     solar_remaining = get_solar_forecast(hass, config)
 
-    # --- NEU: Forecast für morgen auslesen ---
+    # --- Forecast für morgen auslesen ---
     tomorrow_ent = config.get("pv_forecast_tomorrow_entity")
     pv_tomorrow_total = 0.0
     if tomorrow_ent:
@@ -214,8 +239,7 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
             except ValueError:
                 pass
 
-    # --- NEU: Autarkie-Zeitpunkt berechnen ---
-    # Ruft die Hilfsfunktion (die sich ebenfalls in analytics.py befinden muss) auf
+    # --- Autarkie-Zeitpunkt berechnen ---
     autarky_time = calculate_autarky_time_tomorrow(profile_manager, solar_remaining, config)
 
     # 5. Rückgabe des gesamten Datenpakets
@@ -223,7 +247,7 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
         "rest_demand_daily": round(rest_demand, 2),
         "forecast_current_hour": round(cur_rem, 3),
         "forecast_next_hour": round(next_full, 3),
-        "morning_reserve": round(rest_demand * 0.2, 2), # 20% Puffer
+        "morning_reserve": round(rest_demand * 0.2, 2), 
         "solar_remaining": solar_remaining,
         "prices": prices,
         "ai_price_summary": ai_summary,
