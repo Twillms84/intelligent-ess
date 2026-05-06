@@ -145,24 +145,51 @@ def calculate_autarky_time_tomorrow(profile_manager, solar_forecast, config):
     Ermittelt die Uhrzeit am morgigen Tag, ab der die PV-Produktion
     voraussichtlich den Hausverbrauch übersteigt.
     """
-    if not isinstance(solar_forecast, dict):
-        return "Keine Stundenwerte"
+    from homeassistant.util import dt as dt_util
+    from datetime import timedelta
 
     now = dt_util.now()
     tomorrow = now + timedelta(days=1)
     default_usage = float(config.get("default_usage", 0.85))
-    
+
+    # --- FIX: Flexibles Parsen der Vorhersage-Daten ---
+    forecast_dict = {}
+    if isinstance(solar_forecast, dict):
+        forecast_dict = solar_forecast
+    elif isinstance(solar_forecast, list): # Typisch für HA Attributes (z.B. Solcast)
+        for item in solar_forecast:
+            dt_str = item.get('datetime')
+            # Verschiedene Integrationen nennen den Wert unterschiedlich
+            val = item.get('native_value', item.get('pv_estimate', item.get('watt_hours', 0)))
+            if dt_str and val is not None:
+                try:
+                    parsed_dt = dt_util.parse_datetime(dt_str)
+                    if parsed_dt:
+                        key = parsed_dt.strftime("%Y-%m-%d %H:00:00")
+                        # Falls der Wert in Watt (statt kW) kommt, umrechnen
+                        forecast_dict[key] = float(val) / 1000.0 if float(val) > 1000 else float(val)
+                except Exception:
+                    pass
+
+    if not forecast_dict:
+        return "Keine Stundenwerte"
+
     db = profile_manager._get_db()
     wd = str(tomorrow.weekday())
-    
+
     for hour in range(5, 16): 
         check_time = tomorrow.replace(hour=hour, minute=0, second=0, microsecond=0)
         pv_key = check_time.strftime("%Y-%m-%d %H:00:00")
         
-        pv_yield = solar_forecast.get(pv_key, 0.0)
+        pv_yield = forecast_dict.get(pv_key, 0.0)
         
         hr_data = db.get(wd, {}).get(str(hour), {})
-        demand = sum(float(v) for v in hr_data.values()) / len(hr_data) if hr_data else default_usage
+        if isinstance(hr_data, dict) and hr_data:
+            demand = sum(float(v) for v in hr_data.values()) / len(hr_data)
+        elif isinstance(hr_data, (float, int)):
+            demand = float(hr_data)
+        else:
+            demand = default_usage
         
         if pv_yield > demand:
             return f"{hour:02d}:00"

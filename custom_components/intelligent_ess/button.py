@@ -85,56 +85,107 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
             
             # --- DYNAMISCHE WERTE ---
             soc_now = readings.get("bat_soc", 0)
-            rest_demand = round(data.get("rest_demand_daily", 0), 2)
             solar_remaining = data.get("solar_remaining", 0)
             prices = data.get("prices", [])
             
-            # --- KI Zusammenfassung aus Analytics holen ---
-            ai_summary = data.get("ai_price_summary", {})
-            min_p = ai_summary.get("min_price", 0)
-            min_t = ai_summary.get("min_time", "00:00")
-            max_p = ai_summary.get("max_price", 0)
-            max_t = ai_summary.get("max_time", "00:00")
-            avg_p = ai_summary.get("avg_price", 0)
+            # --- 3. EXAKTE NACHTRESERVE BERECHNEN ---
+            now = dt_util.now()
+            autarky_str = data.get("autarky_start_tomorrow", "08:00")
             
-            # --- PREISE AUFBEREITEN (Für Kontext) ---
-            is_15_min = len(prices) > 48
-            step = 4 if is_15_min else 1 
-            items_12h = 48 if is_15_min else 12 
+            # Fallback auf 8 Uhr, falls "Nicht erreicht" oder "Keine Stundenwerte"
+            autarky_hour = 8 
+            if ":" in autarky_str:
+                try:
+                    autarky_hour = int(autarky_str.split(":")[0])
+                except ValueError:
+                    pass
             
-            price_list = []
-            if prices:
-                for p in prices[:items_12h:step]:
-                    try:
-                        time_str = dt_util.parse_datetime(p['start_time']).strftime('%H:%M')
-                        price_list.append(f"{time_str}:{round(p['total']*100,1)}ct")
-                    except Exception:
-                        pass
-            
-            price_summary = " | ".join(price_list) if price_list else "FEHLER: Keine Preisdaten gefunden!"
+            # Stündlichen Bedarf bis zum Autarkiestart summieren
+            night_demand_kwh = 0.0
+            db = self.coordinator.profile_manager._get_db() if hasattr(self.coordinator, "profile_manager") else {}
+            default_usage = float(config.get("default_usage", 0.85))
 
-            # 2. DER VERBESSERTE PROMPT
+            # Smarte Hilfsfunktion zum sicheren Auslesen der Datenbank
+            def get_hourly_demand(day_str, hour_str):
+                hr_val = db.get(day_str, {}).get(hour_str, {})
+                if isinstance(hr_val, dict) and hr_val:
+                    return sum(float(v) for v in hr_val.values()) / len(hr_val)
+                elif isinstance(hr_val, (float, int)):
+                    return float(hr_val)
+                return default_usage
+
+            # A) Rest von heute (aktuelle Stunde bis 23 Uhr)
+            today_wd = str(now.weekday())
+            for h in range(now.hour, 24):
+                night_demand_kwh += get_hourly_demand(today_wd, str(h))
+            
+            # B) Morgen bis Autarkiestart (0 Uhr bis z.B. 7 Uhr)
+            tomorrow_wd = str((now + timedelta(days=1)).weekday())
+            for h in range(0, autarky_hour):
+                night_demand_kwh += get_hourly_demand(tomorrow_wd, str(h))
+            
+            night_demand_kwh = round(night_demand_kwh, 2)
+
+            # C) Energie-Bilanz ziehen
+            usable_battery_kwh = max(0.0, (soc_now - min_soc) / 100.0 * cap_kwh)
+            total_available_energy = usable_battery_kwh + solar_remaining
+            
+            energy_balance = total_available_energy - night_demand_kwh
+            
+            if energy_balance < 0:
+                nachtreserve_kwh = round(abs(energy_balance), 2)
+                nachtreserve_aktiv = True
+                
+                # Überschlagsrechnung: Wann ist der Akku ca. leer?
+                hours_to_autarky = 0
+                if autarky_hour > now.hour:
+                    hours_to_autarky = autarky_hour - now.hour
+                else:
+                    hours_to_autarky = (24 - now.hour) + autarky_hour
+                
+                hours_to_autarky = max(1, hours_to_autarky) # Verhindert Division durch 0
+                avg_hourly_demand = night_demand_kwh / hours_to_autarky if night_demand_kwh > 0 else default_usage
+                hours_battery_lasts = usable_battery_kwh / avg_hourly_demand if avg_hourly_demand > 0 else 99
+                
+                empty_time = now + timedelta(hours=hours_battery_lasts)
+                empty_time_str = f"ca. {empty_time.strftime('%H:%M')} Uhr"
+            else:
+                nachtreserve_kwh = 0.0
+                nachtreserve_aktiv = False
+                empty_time_str = "Reicht bis zum Autarkiestart"
+
+            # 2. DER DATEN-GETRIEBENE PROMPT
             prompt = (
-                f"ANALYSE-AUFTRAG INTELLIGENT ESS:\n"
-                f"- Akku: {soc_now}% von {cap_kwh}kWh (Min-Reserve: {min_soc}%)\n"
-                f"- Solar-Rest: {solar_remaining}kWh | Bedarf 24h: {rest_demand}kWh\n"
-                f"- Preis-Eckdaten: Günstigster Preis {min_p}ct um {min_t} Uhr. Teuerster Preis {max_p}ct um {max_t} Uhr. Schnitt: {avg_p}ct.\n"
-                f"- Verlauf (12h): {price_summary}\n"
-                f"- Ersparnis-Limit: {hold_threshold}ct\n\n"
-                "AUFGABEN & LOGIK:\n"
-                "1. LADE-CHECK (Netzlade-Optimierung):\n"
-                "Reicht der Akku + Solar-Rest, um den Hausbedarf durch die Nacht zu decken?\n"
-                f"-> Wenn NEIN: Setze \"charge\": \"YES\". Der Startzeitpunkt MUSS {min_t} Uhr sein. Schätze die \"duration\" in Stunden, um das Defizit auszugleichen.\n\n"
-                "2. SPERR-CHECK (Arbitrage / Preisspitzen-Vermeidung):\n"
-                f"Ist der teuerste Preis ({max_p}ct) mindestens {hold_threshold}ct teurer als der günstigste ({min_p}ct)?\n"
-                "-> Wenn JA und der Akku droht vorher leer zu laufen: Setze \"hold\": \"YES\".\n"
-                f"-> WICHTIG: Setze \"hold_start\" auf eine Zeit VOR {max_t} Uhr (um den Akku aufzusparen) und \"hold_end\" EXAKT auf {max_t} Uhr.\n\n"
+                "Du bist 'Intelligent ESS', ein smarter KI-Energiemanager für ein Smart Home. "
+                "Hier sind die harten Fakten für heute:\n\n"
+                f"🔋 Batterie-Stand: {soc_now}% (Nutzbare Restkapazität: {round(usable_battery_kwh, 1)} kWh)\n"
+                f"☀️ Solar-Rest für heute: {solar_remaining} kWh\n"
+                f"🏠 Bedarf bis Autarkiestart morgen früh ({autarky_hour}:00 Uhr): {night_demand_kwh} kWh\n"
+                f"⚠️ Analytisches Defizit: {nachtreserve_kwh} kWh (Wird Akku leerlaufen? {'JA' if nachtreserve_aktiv else 'NEIN'})\n"
+                f"⏳ Prognose ohne Eingriff: Akku ist voraussichtlich um {empty_time_str} LEER.\n"
+                f"📈 Strompreise: Tiefstpreis {min_p}ct (um {min_t}) | Höchstpreis {max_p}ct (um {max_t}) | Schnitt: {avg_p}ct\n"
+                f"⏱️ Preisverlauf (12h): {price_summary}\n"
+                f"💰 Ersparnis-Schwelle: {hold_threshold} ct\n\n"
+                "DEINE AUFGABEN:\n"
+                "1. AUSFÜHRLICHER NUTZER-BERICHT:\n"
+                "Schreibe eine detaillierte, datenbasierte Analyse (ca. 4-6 Sätze). Nenne UNBEDINGT konkrete Zahlen "
+                "(die nutzbare Restkapazität in kWh, das exakte Defizit, wichtige Uhrzeiten und Strompreise in ct). "
+                "Erkläre dem Nutzer logisch und transparent deine Taktik: Wann genau kaufst du Netzstrom und für welche teure Stunde "
+                "sparst du die restliche Batterie auf? Sei informativ und professionell.\n\n"
+                "2. SYSTEM-LOGIK:\n"
+                "- SPERR-CHECK (Arbitrage): Wenn ein Defizit besteht, MÜSSEN wir Netzstrom beziehen. Das tun wir am besten, wenn er billig ist! "
+                "Setze \"hold\": \"YES\", um die Batterie in den GÜNSTIGSTEN Stunden zu sperren. "
+                f"🚨 WICHTIG: Der Akku läuft voraussichtlich schon {empty_time_str} leer! Deine Sperre ('hold_start') MUSS "
+                "vor diesem Zeitpunkt beginnen. Wenn du die Sperre erst in den günstigsten Stunden setzt (z.B. von 4-6 Uhr), der Akku aber "
+                "vorher schon leer ist, war die Sperre sinnlos. Ziehe die Sperre also rechtzeitig vor, um Netzstrom zu nutzen, wenn er am billigsten "
+                "VERFÜGBAR ist, und rette die restliche Akku-Ladung physisch in die teuerste Morgenstunde ({max_t} Uhr).\n"
+                "- LADE-CHECK: Nur wenn der Tiefstpreis extrem billig ist, setze zusätzlich \"charge\": \"YES\" um {min_t} Uhr.\n\n"
                 "ANTWORTE EXAKT IN DIESEM FORMAT:\n"
-                "Kurze Analyse.\n"
-                "RESULT: {"
+                "[Dein ausführlicher, zahlenbasierter Analyse-Text für den Nutzer]\n"
+                "RESULT: {\n"
                 "\"charge\": \"YES/NO\", \"charge_start\": \"HH:MM\", \"duration\": 2, "
                 "\"hold\": \"YES/NO\", \"hold_start\": \"HH:MM\", \"hold_end\": \"HH:MM\", "
-                "\"reason\": \"Kurze Begründung\"}"
+                "\"reason\": \"Kurze technische Begründung\"}"
             )
 
             # 3. KI-SERVICE AUFRUFEN MIT RETRY-MECHANISMUS

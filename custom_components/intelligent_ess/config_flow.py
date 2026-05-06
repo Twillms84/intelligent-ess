@@ -43,6 +43,8 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Smart Switches
                 vol.Optional("smart_switches"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch", multiple=True)),
                 vol.Required("smart_switch_threshold", default=-1000): vol.Coerce(int),
+
+                vol.Optional("conversation_agent", default="conversation.home_assistant"): selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation")),
             })
         )
 
@@ -91,5 +93,7 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required("wr_unlock_value", default=config.get("wr_unlock_value", 80)): vol.Coerce(int),
                 vol.Optional("smart_switches", default=config.get("smart_switches", [])): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch", multiple=True)),
                 vol.Required("smart_switch_threshold", default=config.get("smart_switch_threshold", -1000)): vol.Coerce(int),
+
+                vol.Optional("conversation_agent", default=config.get("conversation_agent", "conversation.home_assistant")): selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation")),
             })
         )
