@@ -78,80 +78,48 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
             data = self.coordinator.data if self.coordinator.data else {}
             readings = self.coordinator.last_readings if hasattr(self.coordinator, 'last_readings') else {}
             
-            # --- STATISCHE PARAMETER ---
-            cap_kwh = config.get("battery_capacity", 15.0)
-            min_soc = config.get("min_soc_reserve", 10.0)
-            hold_threshold = config.get("charge_delta_threshold", 10.0)
-            
-            # --- DYNAMISCHE WERTE ---
+            # --- BASISWERTE & GATES (zentral im Coordinator vorberechnet) ---
+            gates = data.get("gates", {}) or {}
+            cap_kwh = float(config.get("battery_capacity", 15.0))
+            min_soc = float(config.get("min_soc_reserve", 10.0))
+            price_delta = float(config.get("price_delta_threshold", 5.0))
+
             soc_now = readings.get("bat_soc", 0)
             solar_remaining = data.get("solar_remaining", 0)
             prices = data.get("prices", [])
-            
-            # --- 3. EXAKTE NACHTRESERVE BERECHNEN ---
+            default_usage = float(config.get("default_usage", 0.85))
+
             now = dt_util.now()
             autarky_str = data.get("autarky_time_tomorrow", "08:00")
-            
-            # Fallback auf 8 Uhr, falls "Nicht erreicht" oder "Keine Stundenwerte"
-            autarky_hour = 8 
-            if ":" in autarky_str:
+            autarky_hour = 8
+            if isinstance(autarky_str, str) and ":" in autarky_str:
                 try:
                     autarky_hour = int(autarky_str.split(":")[0])
                 except ValueError:
                     pass
-            
-            # Stündlichen Bedarf bis zum Autarkiestart summieren
-            night_demand_kwh = 0.0
-            db = self.coordinator.profile_manager._get_db() if hasattr(self.coordinator, "profile_manager") else {}
-            default_usage = float(config.get("default_usage", 0.85))
 
-            # Smarte Hilfsfunktion zum sicheren Auslesen der Datenbank
-            def get_hourly_demand(day_str, hour_str):
-                hr_val = db.get(day_str, {}).get(hour_str, {})
-                if isinstance(hr_val, dict) and hr_val:
-                    return sum(float(v) for v in hr_val.values()) / len(hr_val)
-                elif isinstance(hr_val, (float, int)):
-                    return float(hr_val)
-                return default_usage
+            usable_battery_kwh = gates.get(
+                "usable_battery", max(0.0, (soc_now - min_soc) / 100.0 * cap_kwh)
+            )
+            night_demand_kwh = data.get("night_demand", 0.0)
+            nacht_defizit = gates.get("nacht_defizit", 0.0)
+            smartcharge_allowed = gates.get("smartcharge_allowed", False)
+            smarthold_allowed = gates.get("smarthold_allowed", False)
+            morning_price_high = gates.get("morning_price_high", False)
+            pv_day_balance = gates.get("pv_day_balance", 0.0)
 
-            # A) Rest von heute (aktuelle Stunde bis 23 Uhr)
-            today_wd = str(now.weekday())
-            for h in range(now.hour, 24):
-                night_demand_kwh += get_hourly_demand(today_wd, str(h))
-            
-            # B) Morgen bis Autarkiestart (0 Uhr bis z.B. 7 Uhr)
-            tomorrow_wd = str((now + timedelta(days=1)).weekday())
-            for h in range(0, autarky_hour):
-                night_demand_kwh += get_hourly_demand(tomorrow_wd, str(h))
-            
-            night_demand_kwh = round(night_demand_kwh, 2)
-
-            # C) Energie-Bilanz ziehen
-            usable_battery_kwh = max(0.0, (soc_now - min_soc) / 100.0 * cap_kwh)
-            total_available_energy = usable_battery_kwh + solar_remaining
-            
-            energy_balance = total_available_energy - night_demand_kwh
-            
-            if energy_balance < 0:
-                nachtreserve_kwh = round(abs(energy_balance), 2)
-                nachtreserve_aktiv = True
-                
-                # Überschlagsrechnung: Wann ist der Akku ca. leer?
-                hours_to_autarky = 0
+            # Ueberschlag: Wann ist der Akku ohne Eingriff voraussichtlich leer?
+            if nacht_defizit > 0:
                 if autarky_hour > now.hour:
                     hours_to_autarky = autarky_hour - now.hour
                 else:
                     hours_to_autarky = (24 - now.hour) + autarky_hour
-                
-                hours_to_autarky = max(1, hours_to_autarky) # Verhindert Division durch 0
-                avg_hourly_demand = night_demand_kwh / hours_to_autarky if night_demand_kwh > 0 else default_usage
-                hours_battery_lasts = usable_battery_kwh / avg_hourly_demand if avg_hourly_demand > 0 else 99
-                
+                hours_to_autarky = max(1, hours_to_autarky)
+                avg_hourly_demand = (night_demand_kwh / hours_to_autarky) if night_demand_kwh > 0 else default_usage
+                hours_battery_lasts = (usable_battery_kwh / avg_hourly_demand) if avg_hourly_demand > 0 else 99
                 empty_time = now + timedelta(hours=hours_battery_lasts)
                 empty_time_str = f"ca. {empty_time.strftime('%H:%M')} Uhr"
             else:
-                nachtreserve_kwh = 0.0
-                nachtreserve_aktiv = False
                 empty_time_str = "Reicht bis zum Autarkiestart"
 
             # 2. DER DATEN-GETRIEBENE PROMPT
@@ -173,33 +141,37 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
                     continue
             price_summary = " | ".join(summary_parts) if summary_parts else "keine Preisdaten"
 
+            gate_charge_txt = "OFFEN – Laden erlaubt" if smartcharge_allowed else "GESCHLOSSEN – NICHT laden"
+            gate_hold_txt = "OFFEN – Sperre erlaubt" if smarthold_allowed else "GESCHLOSSEN – NICHT sperren"
+
             prompt = (
-                "Du bist 'Intelligent ESS', ein smarter KI-Energiemanager für ein Smart Home. "
-                "Hier sind die harten Fakten für heute:\n\n"
-                f"🔋 Batterie-Stand: {soc_now}% (Nutzbare Restkapazität: {round(usable_battery_kwh, 1)} kWh)\n"
-                f"☀️ Solar-Rest für heute: {solar_remaining} kWh\n"
-                f"🏠 Bedarf bis Autarkiestart morgen früh ({autarky_hour}:00 Uhr): {night_demand_kwh} kWh\n"
-                f"⚠️ Analytisches Defizit: {nachtreserve_kwh} kWh (Wird Akku leerlaufen? {'JA' if nachtreserve_aktiv else 'NEIN'})\n"
-                f"⏳ Prognose ohne Eingriff: Akku ist voraussichtlich um {empty_time_str} LEER.\n"
-                f"📈 Strompreise: Tiefstpreis {min_p}ct (um {min_t}) | Höchstpreis {max_p}ct (um {max_t}) | Schnitt: {avg_p}ct\n"
-                f"⏱️ Preisverlauf (12h): {price_summary}\n"
-                f"💰 Ersparnis-Schwelle: {hold_threshold} ct\n\n"
+                "Du bist 'Intelligent ESS', ein KI-Energiemanager für ein Smart Home. "
+                "Triff Entscheidungen ausschließlich auf Basis dieser vorberechneten Fakten.\n\n"
+                "=== BASISWERTE ===\n"
+                f"🔋 Batterie: {soc_now}% – nutzbar {round(usable_battery_kwh, 1)} kWh (Reserve {min_soc}%)\n"
+                f"☀️ Solar-Rest heute: {solar_remaining} kWh\n"
+                f"🏠 Bedarf bis Autarkiestart ({autarky_hour:02d}:00 Uhr): {night_demand_kwh} kWh\n"
+                f"⚠️ Nacht-Defizit: {nacht_defizit} kWh – Akku ohne Eingriff leer um {empty_time_str}\n"
+                f"📈 Preis: Tief {min_p}ct ({min_t}) | Hoch {max_p}ct ({max_t}) | Schnitt {avg_p}ct\n"
+                f"⏱️ Verlauf (12h): {price_summary}\n\n"
+                "=== ENTSCHEIDUNGS-GATES (verbindlich!) ===\n"
+                f"SmartCharge: {gate_charge_txt}\n"
+                f"   (Tages-PV-Bilanz {pv_day_balance} kWh – Laden nur sinnvoll, wenn zu wenig PV erwartet wird)\n"
+                f"SmartHold: {gate_hold_txt}\n"
+                f"   (Nachtreserve unzureichend: {'JA' if nacht_defizit > 0 else 'NEIN'} | "
+                f"Morgenpreis hoch: {'JA' if morning_price_high else 'NEIN'})\n\n"
                 "DEINE AUFGABEN:\n"
-                "1. AUSFÜHRLICHER NUTZER-BERICHT:\n"
-                "Schreibe eine detaillierte, datenbasierte Analyse (ca. 4-6 Sätze). Nenne UNBEDINGT konkrete Zahlen "
-                "(die nutzbare Restkapazität in kWh, das exakte Defizit, wichtige Uhrzeiten und Strompreise in ct). "
-                "Erkläre dem Nutzer logisch und transparent deine Taktik: Wann genau kaufst du Netzstrom und für welche teure Stunde "
-                "sparst du die restliche Batterie auf? Sei informativ und professionell.\n\n"
-                "2. SYSTEM-LOGIK:\n"
-                "- SPERR-CHECK (Arbitrage): Wenn ein Defizit besteht, MÜSSEN wir Netzstrom beziehen. Das tun wir am besten, wenn er billig ist! "
-                "Setze \"hold\": \"YES\", um die Batterie in den GÜNSTIGSTEN Stunden zu sperren. "
-                f"🚨 WICHTIG: Der Akku läuft voraussichtlich schon {empty_time_str} leer! Deine Sperre ('hold_start') MUSS "
-                "vor diesem Zeitpunkt beginnen. Wenn du die Sperre erst in den günstigsten Stunden setzt (z.B. von 4-6 Uhr), der Akku aber "
-                "vorher schon leer ist, war die Sperre sinnlos. Ziehe die Sperre also rechtzeitig vor, um Netzstrom zu nutzen, wenn er am billigsten "
-                f"VERFÜGBAR ist, und rette die restliche Akku-Ladung physisch in die teuerste Morgenstunde ({max_t} Uhr).\n"
-                f"- LADE-CHECK: Nur wenn der Tiefstpreis extrem billig ist, setze zusätzlich \"charge\": \"YES\" um {min_t} Uhr.\n\n"
+                "1. NUTZER-BERICHT (4-6 Sätze, konkrete Zahlen): Erkläre transparent, was du tust und warum. "
+                "Sind beide Gates GESCHLOSSEN, begründe, warum kein Eingriff nötig ist (genug PV/Reserve).\n"
+                "2. STEUERUNG – halte dich strikt an die Gates:\n"
+                "- charge: Setze NUR dann 'YES', wenn SmartCharge OFFEN ist. Lege das Ladefenster in die günstigsten "
+                f"Stunden (z. B. ab {min_t}).\n"
+                "- hold: Setze NUR dann 'YES', wenn SmartHold OFFEN ist. Die Sperre ('hold_start') MUSS beginnen, BEVOR der "
+                f"Akku leer ist ({empty_time_str}), und bis in die teuerste Morgenstunde ({max_t}) reichen, um den Akku "
+                "dorthin zu retten.\n"
+                "- Ist ein Gate GESCHLOSSEN, setze den jeweiligen Wert zwingend auf 'NO'.\n\n"
                 "ANTWORTE EXAKT IN DIESEM FORMAT:\n"
-                "[Dein ausführlicher, zahlenbasierter Analyse-Text für den Nutzer]\n"
+                "[Dein Analyse-Text für den Nutzer]\n"
                 "RESULT: {\n"
                 "\"charge\": \"YES/NO\", \"charge_start\": \"HH:MM\", \"duration\": 2, "
                 "\"hold\": \"YES/NO\", \"hold_start\": \"HH:MM\", \"hold_end\": \"HH:MM\", "
@@ -250,33 +222,43 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
                 cmd = json.loads(data_str)
                 
                 new_opts = dict(self.entry.options)
-                
-                # --- LOGIK FÜR LADEN (Slot 1) ---
-                if cmd.get("charge") == "YES":
+
+                # --- LADEN (Slot 1) – nur wenn SmartCharge-Gate OFFEN ist ---
+                want_charge = (cmd.get("charge") == "YES") and smartcharge_allowed
+                if want_charge:
                     st_time = cmd.get("charge_start", "00:00")
-                    if len(st_time) == 5: st_time += ":00"
+                    if len(st_time) == 5:
+                        st_time += ":00"
                     new_opts["man_charge_s1_start"] = st_time
-                    
+
                     st_hour = int(st_time.split(":")[0])
                     dur = int(cmd.get("duration", 3))
                     new_opts["man_charge_s1_end"] = f"{(st_hour + dur) % 24:02d}:00:00"
-                    
                     new_opts["man_charge_s1_enabled"] = True
                     _LOGGER.info("KI setzt LADE-TIMER: %s für %s Stunden", st_time, dur)
+                else:
+                    # KI sagt NO oder Gate geschlossen -> Slot deaktivieren (keine Altlast).
+                    new_opts["man_charge_s1_enabled"] = False
+                    if cmd.get("charge") == "YES" and not smartcharge_allowed:
+                        _LOGGER.info("KI wollte laden, aber SmartCharge-Gate ist geschlossen – ignoriert.")
 
-                # --- LOGIK FÜR SPERRE (Hold Slot 1) ---
-                if cmd.get("hold") == "YES":
+                # --- SPERRE (Hold Slot 1) – nur wenn SmartHold-Gate OFFEN ist ---
+                want_hold = (cmd.get("hold") == "YES") and smarthold_allowed
+                if want_hold:
                     h_start = cmd.get("hold_start", "07:00")
                     h_end = cmd.get("hold_end", "09:00")
-                    
-                    if len(h_start) == 5: h_start += ":00"
-                    if len(h_end) == 5: h_end += ":00"
-                    
+                    if len(h_start) == 5:
+                        h_start += ":00"
+                    if len(h_end) == 5:
+                        h_end += ":00"
                     new_opts["man_hold_s1_start"] = h_start
                     new_opts["man_hold_s1_end"] = h_end
-                    
                     new_opts["man_hold_s1_enabled"] = True
                     _LOGGER.info("KI setzt SPERRE: %s bis %s", h_start, h_end)
+                else:
+                    new_opts["man_hold_s1_enabled"] = False
+                    if cmd.get("hold") == "YES" and not smarthold_allowed:
+                        _LOGGER.info("KI wollte sperren, aber SmartHold-Gate ist geschlossen – ignoriert.")
 
                 new_opts["ki_reason"] = cmd.get("reason", "Strategie aktualisiert")
                 self.hass.config_entries.async_update_entry(self.entry, options=new_opts)

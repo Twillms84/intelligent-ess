@@ -43,3 +43,22 @@
   `after_dependencies`, `issue_tracker`, `integration_type`.
 - Neu: `.gitignore`, `hacs.json`, `LICENSE`. `__pycache__` und verwaiste
   `.pyc` (`smart_charging`, `smart_discharging`) entfernt.
+
+## 1.0.2 – Strategie-Redesign (SmartCharge / SmartHold)
+
+- Neues zentrales Modul `strategy.py` mit deterministischen Gates:
+  - **SmartCharge** nur, wenn prognostiziert zu wenig PV-Ertrag über den Tag
+    kommt (Morgen-PV vs. erwarteter Tagesbedarf; Fallback: Nacht-Bilanz).
+  - **SmartHold** nur, wenn die Nachtreserve nicht reicht UND der Höchstpreis
+    morgens (5–10 Uhr) den aktuellen Preis um mehr als `price_delta_threshold`
+    (ct) übersteigt.
+- KI-Button neu: arbeitet auf den vorberechneten Basiswerten/Gates, Prompt um
+  die zwei Gates herum gebaut. Code-Guards setzen die Gates hart durch – die KI
+  kann kein geschlossenes Gate überstimmen; veraltete Timer werden deaktiviert.
+- Coordinator: SmartCharge gated den autonomen Lade-Fahrplan, SmartHold wird
+  autonom (ohne LLM) angewandt, sofern keine höhere Priorität aktiv ist.
+- `price_delta_threshold` reaktiviert (steuert die SmartHold-Preisschwelle).
+- Gate-Zustände als Attribute am Action-Sensor sichtbar.
+- Entfernt: tote Felder `sun_yield_threshold` und `solar_buy_threshold`.
+- `wr_unlock_value`-Default vereinheitlicht (80). `const.py` aufgeräumt.
+  Doppelte README im Komponentenordner entfernt.

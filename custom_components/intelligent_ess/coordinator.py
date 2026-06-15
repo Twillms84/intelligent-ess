@@ -12,6 +12,7 @@ from .scheduler import calculate_strategy
 from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
 from .logic_engine import ESSLogicEngine
+from .strategy import evaluate_strategy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,12 +120,30 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             self.data["expected_daily_total"] = round(sum(daily_profile), 2)
             # ------------------------------------------------
 
+            # 5b. STRATEGIE-GATES (deterministisch) berechnen
+            gates = self._evaluate_gates(config, current, now)
+            self.data["gates"] = gates
+
             # 6. SCHEDULER
             # KI-Lade-Fahrplan (24h 0/1-Raster) aus Preisen, Bedarf und PV ableiten
             ai_profile = self.profile_manager.calculate_best_profile(self.data, config)
+            # SmartCharge-Gate: Nur laden, wenn prognostiziert zu wenig PV kommt.
+            if not gates["smartcharge_allowed"]:
+                ai_profile = [0] * 24
             self.data["ai_charge_profile"] = ai_profile
 
             strat, msg, lock_needed = calculate_strategy(config, self.hass.states, ai_profile)
+
+            # SmartHold-Gate (autonom): nur greifen, wenn keine hoehere Prioritaet
+            # (manuelles Laden/Sperren, KI-Timer) bereits aktiv ist.
+            if strat == "NORMAL" and gates["smarthold_allowed"]:
+                strat = "HOLD"
+                msg = (
+                    f"SmartHold: Nachtreserve fehlt ({gates['nacht_defizit']} kWh), "
+                    "Morgenpreis hoch – Akku wird gespart."
+                )
+                lock_needed = True
+
             self.data.update({
                 "strat": strat,
                 "strat_msg": msg,
@@ -154,7 +173,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         limit_entity = config.get("wr_limit_entity")
         if limit_entity:
             lock_value = float(config.get("wr_lock_value", 0.0))
-            unlock_value = float(config.get("wr_unlock_value", 100.0))
+            unlock_value = float(config.get("wr_unlock_value", 80.0))
             target_limit = lock_value if lock_needed else unlock_value
             ent_state = self.hass.states.get(limit_entity)
             
@@ -204,6 +223,37 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             else:
                 self._switch_timers.pop(entity_id, None)
             _LOGGER.info("Smart-Switch %s -> %s (Netto: %s W)", entity_id, action, net_watt)
+
+    def _evaluate_gates(self, config, current, now):
+        """Sammelt die Basiswerte und berechnet die SmartCharge/SmartHold-Gates."""
+        # Autarkie-Stunde aus der Analytics-Berechnung ableiten (Fallback 8 Uhr).
+        autarky_str = self.data.get("autarky_time_tomorrow", "08:00")
+        autarky_hour = 8
+        if isinstance(autarky_str, str) and ":" in autarky_str:
+            try:
+                autarky_hour = int(autarky_str.split(":")[0])
+            except ValueError:
+                autarky_hour = 8
+
+        default_usage = float(config.get("default_usage", 0.85))
+        night_demand = self.profile_manager.get_night_demand(now, autarky_hour, default_usage)
+        self.data["night_demand"] = night_demand
+
+        readings = current or self.last_readings or {}
+        soc = readings.get("bat_soc", 0)
+
+        return evaluate_strategy(
+            soc=soc,
+            capacity=float(config.get("battery_capacity", 15.0)),
+            min_soc=float(config.get("min_soc_reserve", 10.0)),
+            solar_remaining=self.data.get("solar_remaining", 0.0),
+            pv_tomorrow_total=self.data.get("pv_tomorrow_total", 0.0),
+            night_demand=night_demand,
+            expected_daily_total=self.data.get("expected_daily_total", 0.0),
+            ai_price_summary=self.data.get("ai_price_summary", {}) or {},
+            current_price=self.data.get("current_price", 0.0),
+            price_delta_threshold=float(config.get("price_delta_threshold", 5.0)),
+        )
 
     def _load_savings(self):
         if os.path.exists(self.savings_path):

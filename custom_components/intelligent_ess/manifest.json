@@ -5,7 +5,7 @@
   "issue_tracker": "https://github.com/twillms84/intelligent-ess/issues",
   "codeowners": ["@twillms84"],
   "after_dependencies": ["tibber", "sun", "energy", "recorder"],
-  "version": "1.0.1",
+  "version": "1.0.2",
   "iot_class": "local_calculation",
   "integration_type": "service",
   "config_flow": true

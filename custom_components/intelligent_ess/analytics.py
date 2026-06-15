@@ -350,6 +350,7 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
         "morning_reserve": round(rest_demand * 0.2, 2), 
         "solar_remaining": solar_remaining,
         "solar_hourly": solar_hourly,
+        "current_price": cur_p,
         "prices": prices,
         "ai_price_summary": ai_summary,
         "savings": {k: round(v, 4) for k, v in savings.items()},

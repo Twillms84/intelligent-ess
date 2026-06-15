@@ -34,7 +34,6 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Parameter
                 vol.Required("battery_capacity", default=15.0): vol.Coerce(float),
                 vol.Required("charge_delta_threshold", default=10.0): vol.Coerce(float),
-                vol.Required("sun_yield_threshold", default=20.0): vol.Coerce(float),
                 vol.Required("default_usage", default=0.85): vol.Coerce(float),
                 vol.Required("min_soc_reserve", default=10.0): vol.Coerce(float),
                 vol.Required("wr_lock_value", default=0): vol.Coerce(int),
@@ -81,7 +80,6 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
                 
                 # --- PARAMETER ---
                 vol.Required("default_usage", default=config.get("default_usage", 0.85)): vol.Coerce(float),
-                vol.Required("sun_yield_threshold", default=config.get("sun_yield_threshold", 20.0)): vol.Coerce(float),
                 vol.Required("battery_capacity", default=config.get("battery_capacity", 15.0)): vol.Coerce(float),
                 vol.Required("charge_delta_threshold", default=config.get("charge_delta_threshold", 10.0)): vol.Coerce(float),
                 vol.Required("min_soc_reserve", default=config.get("min_soc_reserve", 10.0)): vol.Coerce(float),

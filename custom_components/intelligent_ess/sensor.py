@@ -57,7 +57,15 @@ class IntelligentESSActionSensor(IntelligentESSBase):
 
     @property
     def extra_state_attributes(self):
-        return {"grund": self.coordinator.data.get("strat_msg", "")}
+        gates = self.coordinator.data.get("gates", {}) or {}
+        return {
+            "grund": self.coordinator.data.get("strat_msg", ""),
+            "smartcharge_erlaubt": gates.get("smartcharge_allowed"),
+            "smarthold_erlaubt": gates.get("smarthold_allowed"),
+            "nacht_defizit_kwh": gates.get("nacht_defizit"),
+            "tages_pv_bilanz_kwh": gates.get("pv_day_balance"),
+            "morgenpreis_hoch": gates.get("morning_price_high"),
+        }
 
 class IntelligentESSGenericSensor(IntelligentESSBase):
     """Universal-Sensor für einfache Werte wie Restbedarf oder Fahrplan."""

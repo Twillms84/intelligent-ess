@@ -264,3 +264,21 @@ class ProfileManager:
             val = self.get_profile_value(dt_target, default_usage)
             profile.append(round(val, 3))
         return profile
+
+    def get_night_demand(self, now, autarky_hour=8, default_usage=0.85):
+        """Summiert den erwarteten Verbrauch von jetzt bis zum Autarkiestart morgen.
+
+        Deckt die aktuelle Stunde bis 23 Uhr heute plus 0 Uhr bis (autarky_hour-1)
+        morgen ab.
+        """
+        total = 0.0
+        for h in range(now.hour, 24):
+            target = now.replace(hour=h, minute=0, second=0, microsecond=0)
+            total += self.get_profile_value(target, default_usage)
+
+        tomorrow = now + timedelta(days=1)
+        for h in range(0, max(0, int(autarky_hour))):
+            target = tomorrow.replace(hour=h, minute=0, second=0, microsecond=0)
+            total += self.get_profile_value(target, default_usage)
+
+        return round(total, 2)
