@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtuelle Umgebungen
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Home Assistant Laufzeit-Artefakte
+intelligent_ess_savings.json
+*.log

@@ -1,10 +1,12 @@
 {
   "domain": "intelligent_ess",
   "name": "Open Intelligent ESS",
-  "documentation": "https://github.com/twillms84/tibber_smart_battery",
-  "dependencies": ["tibber", "sun"],
-  "codeowners": ["@twillms"],
-  "version": "1.0.0",
+  "documentation": "https://github.com/twillms84/intelligent-ess",
+  "issue_tracker": "https://github.com/twillms84/intelligent-ess/issues",
+  "codeowners": ["@twillms84"],
+  "after_dependencies": ["tibber", "sun", "energy", "recorder"],
+  "version": "1.0.1",
   "iot_class": "local_calculation",
+  "integration_type": "service",
   "config_flow": true
 }

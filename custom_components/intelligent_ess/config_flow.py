@@ -51,15 +51,11 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return IntelligentESSOptionsFlowHandler(config_entry)
+        return IntelligentESSOptionsFlowHandler()
 
 
 class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
     """Behandelt Änderungen an der Konfiguration (Options)."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialisiert den Handler."""
-        pass
 
     async def async_step_init(self, user_input=None):
         """Haupt-Schritt des Options Flows."""

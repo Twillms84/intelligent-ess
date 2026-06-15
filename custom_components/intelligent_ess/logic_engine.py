@@ -1,46 +1,48 @@
-from datetime import datetime
+"""Hilfslogik fuer das intelligente Schalten von Ueberschuss-Verbrauchern.
+
+Hinweis: Die fruehere statische `calculate_strategy` wurde entfernt. Die
+zentrale Strategie-Entscheidung liegt ausschliesslich in `scheduler.py`, damit
+es nur eine Quelle der Wahrheit gibt.
+"""
+
+from homeassistant.util import dt as dt_util
+
 
 class ESSLogicEngine:
     @staticmethod
-    def calculate_strategy(soc, cap, min_soc, rest_demand, solar_fc, prices):
-        """Berechnet die statische Backup-Strategie, falls der KI-Scheduler ausfällt."""
-        kwh_now = max(0, (cap * (soc - min_soc)) / 100)
-        
-        # Preis-Check
-        cur_p = prices[0]['price'] if prices else 0.30
-        future_prices = [p['price'] for p in prices[1:24]] if prices else []
-        m_peak = max(future_prices) if future_prices else cur_p
-        is_cheap = cur_p <= (min(future_prices) * 1.15) if future_prices else True
-
-        # Strategie-Entscheidung
-        if (kwh_now + solar_fc) < rest_demand:
-            if is_cheap: 
-                return "LADEN", "Laden: Akku + Solar reicht nicht."
-            
-            # Geändert von SPERREN zu HOLD für systemweite Konsistenz
-            return "HOLD", f"Sperren: Akku sparen für Peak ({round(m_peak*100,1)}ct)."
-        
-        return "NORMAL", "Betrieb über Akku."
-
-    @staticmethod
     def smart_switch_control(net_watt, threshold, timers, switches, hass_states):
-        """Logik für intelligentes Überschuss-Schalten mit Ausfallschutz."""
+        """Schaltet Ueberschuss-Verbraucher gestaffelt ein/aus.
+
+        net_watt: aktuelle Netzleistung (negativ = Einspeisung/Ueberschuss,
+                  positiv = Bezug).
+        threshold: Einschalt-Schwelle (z.B. -1000 W Ueberschuss).
+        timers:    dict {entity_id: einschalt_timestamp} fuer Mindestlaufzeit.
+        switches:  Liste der zu steuernden Schalter-Entitaeten.
+        hass_states: hass.states (zum Lesen des aktuellen Schalterzustands).
+
+        Rueckgabe: Liste von (entity_id, "turn_on"|"turn_off")-Aktionen,
+        maximal eine Aktion pro Aufruf (sanftes Ein-/Ausschalten).
+        """
         actions = []
-        now = datetime.now().timestamp()
-        
-        if net_watt < threshold: # Überschuss
+        if not switches:
+            return actions
+
+        now = dt_util.utcnow().timestamp()
+
+        if net_watt < threshold:  # Ueberschuss vorhanden -> einen Verbraucher zuschalten
             for s in switches:
                 state = hass_states.get(s)
-                # Sicherheitsabfrage, falls Entität offline ist
+                # Sicherheitsabfrage, falls Entitaet offline ist
                 if state and state.state == "off":
                     actions.append((s, "turn_on"))
-                    return actions # Nur einen pro Minute einschalten
-                    
-        elif net_watt > 100: # Bezug
+                    return actions  # nur einen pro Zyklus einschalten
+
+        elif net_watt > 100:  # Netzbezug -> zuletzt zugeschalteten Verbraucher wieder abwerfen
             for s in reversed(switches):
                 state = hass_states.get(s)
+                # Mindestlaufzeit von 5 Minuten respektieren (Schutz vor Takten)
                 if state and state.state == "on" and (now - timers.get(s, 0)) > 300:
                     actions.append((s, "turn_off"))
                     return actions
-                    
+
         return actions

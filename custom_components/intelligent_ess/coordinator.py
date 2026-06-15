@@ -7,10 +7,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .sheduler import calculate_strategy
+from .scheduler import calculate_strategy
 # WICHTIG: Hier 'async_get_raw_states' importieren!
 from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
+from .logic_engine import ESSLogicEngine
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self._savings_loaded = False
         self._last_learning_date = None # Merkt sich, wann die KI zuletzt trainiert wurde
         self._update_cycles = 0         # Zähler für das Speichern der Savings
+        self._switch_timers = {}        # Einschalt-Zeitpunkte der Smart-Switches
 
         self.data = {
             "house_kw": 0.0,
@@ -89,6 +91,10 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                         deltas.get("bat_chg", 0)
                     ))
                     self.data["house_kw"] = round(house_kwh * 60, 3) # Fürs Frontend hochrechnen
+
+                    # Netto-Netzleistung (W): positiv = Bezug, negativ = Einspeisung/Ueberschuss
+                    grid_delta_kwh = deltas.get("grid_in", 0) - deltas.get("grid_out", 0)
+                    self.data["net_watt"] = round(grid_delta_kwh * 60000, 1)
                 else:
                     _LOGGER.warning("Unplausible Zähler-Deltas erkannt. Überspringe Finanzen für diese Minute.")
                     deltas = {} 
@@ -114,7 +120,11 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             # ------------------------------------------------
 
             # 6. SCHEDULER
-            strat, msg, lock_needed = calculate_strategy(config, self.hass.states)
+            # KI-Lade-Fahrplan (24h 0/1-Raster) aus Preisen, Bedarf und PV ableiten
+            ai_profile = self.profile_manager.calculate_best_profile(self.data, config)
+            self.data["ai_charge_profile"] = ai_profile
+
+            strat, msg, lock_needed = calculate_strategy(config, self.hass.states, ai_profile)
             self.data.update({
                 "strat": strat,
                 "strat_msg": msg,
@@ -143,7 +153,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         # 1. Haupt-Limit (Sperre/Freigabe)
         limit_entity = config.get("wr_limit_entity")
         if limit_entity:
-            target_limit = 0.0 if lock_needed else float(config.get("wr_unlock_value", 100.0))
+            lock_value = float(config.get("wr_lock_value", 0.0))
+            unlock_value = float(config.get("wr_unlock_value", 100.0))
+            target_limit = lock_value if lock_needed else unlock_value
             ent_state = self.hass.states.get(limit_entity)
             
             if ent_state and ent_state.state not in ['unknown', 'unavailable', 'none']:
@@ -167,6 +179,31 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 await self.hass.services.async_call(
                     "switch", "turn_off", {"entity_id": charge_control_entity}
                 )
+
+        # 3. Smart-Switches: Ueberschuss-Verbraucher gestaffelt schalten
+        await self._handle_smart_switches(config)
+
+    async def _handle_smart_switches(self, config):
+        switches = config.get("smart_switches") or []
+        if not switches:
+            return
+
+        threshold = float(config.get("smart_switch_threshold", -1000))
+        net_watt = self.data.get("net_watt", 0.0)
+
+        actions = ESSLogicEngine.smart_switch_control(
+            net_watt, threshold, self._switch_timers, switches, self.hass.states
+        )
+
+        for entity_id, action in actions:
+            await self.hass.services.async_call(
+                "switch", action, {"entity_id": entity_id}
+            )
+            if action == "turn_on":
+                self._switch_timers[entity_id] = dt_util.utcnow().timestamp()
+            else:
+                self._switch_timers.pop(entity_id, None)
+            _LOGGER.info("Smart-Switch %s -> %s (Netto: %s W)", entity_id, action, net_watt)
 
     def _load_savings(self):
         if os.path.exists(self.savings_path):

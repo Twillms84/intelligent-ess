@@ -3,35 +3,59 @@
     "step": {
       "user": {
         "title": "Intelligent ESS Konfiguration",
+        "description": "Verknüpfe deine Sensoren und Steuer-Entitäten. PV-, Netz- und Batterie-Zähler werden automatisch aus dem Energie-Dashboard gelesen.",
         "data": {
-          "pv_production_sensor": "PV Produktion (kWh)",
-          "grid_consumption_sensor": "Netzbezug (kWh)",
-          "grid_export_sensor": "Netzeinspeisung (kWh)",
-          "bat_charge_sensor": "Batterie Ladung (kWh)",
-          "bat_discharge_sensor": "Batterie Entladung (kWh)",
-          "battery_capacity": "Batterie Kapazität (kWh)",
+          "tibber_price_sensor": "Aktueller Strompreis (Sensor)",
+          "tibber_export_sensor": "Preis-Prognose Sensor (Attribut 'data')",
+          "battery_soc_sensor": "Batterie-Ladestand SOC (%)",
+          "pv_forecast_today_entity": "PV-Prognose heute (Sensor)",
+          "pv_forecast_tomorrow_entity": "PV-Prognose morgen (Sensor, optional)",
           "battery_charge_switch": "Schalter für Netzlade-Modus",
-          "min_soc_reserve": "Min. SOC Reserve (%)",
-          "price_delta_threshold": "Preis-Differenz Sperre (ct)",
-          "charge_delta_threshold": "Preis-Differenz Laden (ct)",
+          "wr_limit_entity": "Wechselrichter-Limit (Number-Entität)",
+          "battery_capacity": "Batterie-Kapazität (kWh)",
+          "charge_delta_threshold": "Preisvorteil fürs Laden (ct)",
           "sun_yield_threshold": "Solar-Schwelle (kWh)",
-          "default_usage": "Hausverbrauch Standard (kW)",
-          "tibber_price_sensor": "Aktueller Strompreis Sensor",
-          "tibber_export_sensor": "Tibber Preise Attribut Sensor",
-          "battery_soc_sensor": "Batterie SOC (%)",
-          "solar_forecast_sensor": "Solar Prognose Sensor",
-          "wr_limit_entity": "Wechselrichter Limit Entität",
-          "wr_lock_value": "Limit-Wert für Sperre",
-          "wr_unlock_value": "Limit-Wert für Normalbetrieb"
+          "default_usage": "Standard-Hausverbrauch (kW)",
+          "min_soc_reserve": "Min. SOC-Reserve (%)",
+          "wr_lock_value": "WR-Limit-Wert bei Sperre",
+          "wr_unlock_value": "WR-Limit-Wert im Normalbetrieb",
+          "smart_switches": "Smart-Switches (Überschuss-Verbraucher)",
+          "smart_switch_threshold": "Einschalt-Schwelle Überschuss (W, negativ)",
+          "conversation_agent": "KI Conversation-Agent"
+        },
+        "data_description": {
+          "tibber_export_sensor": "Sensor, dessen Attribut 'data' die stündliche Preisliste enthält (z. B. Tibber).",
+          "smart_switch_threshold": "Ab welchem Überschuss zugeschaltet wird, z. B. -1000 W.",
+          "wr_lock_value": "Wird gesetzt, wenn die Entladung gesperrt wird (oft 0)."
         }
       }
     }
   },
-  "entity": {
-    "sensor": {
-      "action": { "name": "Empfehlung" },
-      "curr_cons": { "name": "Aktueller Hausverbrauch" },
-      "rest_nacht": { "name": "Restbedarf Nacht" }
+  "options": {
+    "step": {
+      "init": {
+        "title": "Intelligent ESS Einstellungen",
+        "description": "Sensoren und Parameter nachträglich anpassen.",
+        "data": {
+          "battery_charge_switch": "Schalter für Netzlade-Modus",
+          "tibber_price_sensor": "Aktueller Strompreis (Sensor)",
+          "tibber_export_sensor": "Preis-Prognose Sensor (Attribut 'data')",
+          "battery_soc_sensor": "Batterie-Ladestand SOC (%)",
+          "pv_forecast_today_entity": "PV-Prognose heute (Sensor)",
+          "pv_forecast_tomorrow_entity": "PV-Prognose morgen (Sensor, optional)",
+          "wr_limit_entity": "Wechselrichter-Limit (Number-Entität)",
+          "default_usage": "Standard-Hausverbrauch (kW)",
+          "sun_yield_threshold": "Solar-Schwelle (kWh)",
+          "battery_capacity": "Batterie-Kapazität (kWh)",
+          "charge_delta_threshold": "Preisvorteil fürs Laden (ct)",
+          "min_soc_reserve": "Min. SOC-Reserve (%)",
+          "wr_lock_value": "WR-Limit-Wert bei Sperre",
+          "wr_unlock_value": "WR-Limit-Wert im Normalbetrieb",
+          "smart_switches": "Smart-Switches (Überschuss-Verbraucher)",
+          "smart_switch_threshold": "Einschalt-Schwelle Überschuss (W, negativ)",
+          "conversation_agent": "KI Conversation-Agent"
+        }
+      }
     }
   }
 }

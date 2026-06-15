@@ -140,6 +140,76 @@ def get_solar_forecast(hass, config):
                 return 0.0
     return 0.0
     
+def get_solar_forecast_hourly(hass, config):
+    """
+    Liest die stuendliche PV-Prognose fuer morgen aus einem Forecast-Sensor.
+
+    Unterstuetzt die gaengigen Attribut-Formate von Solcast, Forecast.Solar &
+    aehnlichen Integrationen. Rueckgabe: dict { "YYYY-MM-DD HH:00:00": kWh }.
+    """
+    forecast_dict = {}
+    entity_id = config.get("pv_forecast_tomorrow_entity") or config.get("pv_forecast_today_entity")
+    if not entity_id:
+        return forecast_dict
+
+    state = hass.states.get(entity_id)
+    if not state:
+        return forecast_dict
+
+    # Verschiedene Integrationen legen die Stundenliste unter verschiedenen Keys ab.
+    raw = (
+        state.attributes.get("detailedHourly")
+        or state.attributes.get("forecast")
+        or state.attributes.get("detailedForecast")
+        or state.attributes.get("wh_hours")
+        or state.attributes.get("watts")
+        or []
+    )
+
+    # Variante A: dict { "ISO-Zeit": Wert }  (z.B. Forecast.Solar wh_hours/watts)
+    if isinstance(raw, dict):
+        items = raw.items()
+    # Variante B: Liste von dicts  (z.B. Solcast detailedHourly)
+    elif isinstance(raw, list):
+        items = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            dt_str = (
+                item.get("period_start")
+                or item.get("datetime")
+                or item.get("start_time")
+                or item.get("date_time")
+            )
+            val = item.get(
+                "pv_estimate",
+                item.get("native_value", item.get("watt_hours", item.get("value", 0))),
+            )
+            items.append((dt_str, val))
+    else:
+        return forecast_dict
+
+    for dt_str, val in items:
+        if not dt_str or val is None:
+            continue
+        try:
+            parsed_dt = dt_util.parse_datetime(str(dt_str))
+            if not parsed_dt:
+                continue
+            local_dt = dt_util.as_local(parsed_dt)
+            key = local_dt.strftime("%Y-%m-%d %H:00:00")
+            num = float(val)
+            # Watt(h) -> kWh normalisieren, falls die Integration grosse Zahlen liefert.
+            if num > 1000:
+                num = num / 1000.0
+            # Mehrere Eintraege pro Stunde aufsummieren (z.B. 15-Min-Raster).
+            forecast_dict[key] = round(forecast_dict.get(key, 0.0) + num, 3)
+        except (ValueError, TypeError):
+            continue
+
+    return forecast_dict
+
+
 def calculate_autarky_time_tomorrow(profile_manager, solar_forecast, config):
     """
     Ermittelt die Uhrzeit am morgigen Tag, ab der die PV-Produktion
@@ -216,7 +286,9 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
     ai_summary = get_ai_price_summary(prices, hours_ahead=12)
     
     # Aktueller Preis für Berechnungen
-    p_state = hass.states.get(config.get("tibber_export_sensor", ""))
+    # Bevorzugt den dedizierten Preis-Sensor; faellt auf den Forecast-Sensor zurueck.
+    price_sensor_id = config.get("tibber_price_sensor") or config.get("tibber_export_sensor", "")
+    p_state = hass.states.get(price_sensor_id)
     cur_p = 0.30
     if p_state and p_state.state not in ['unknown', 'unavailable', 'none']:
         try: cur_p = float(p_state.state)
@@ -232,8 +304,8 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
     eigen_kwh = max(0, house_kwh - deltas.get("grid_in", 0))
     savings["solar"] += (eigen_kwh * cur_p)
 
-    # Sperr-Ersparnis
-    if current_strat == "SPERRE":
+    # Sperr-Ersparnis (Strategie heisst systemweit "HOLD")
+    if current_strat == "HOLD":
         future_prices = [p['total'] for p in prices[1:items_12h+1]]
         max_future_p = max(future_prices) if future_prices else cur_p
         if max_future_p > cur_p:
@@ -252,8 +324,9 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
 
     savings["total"] = savings["solar"] + savings["hold"] + savings["load"]
     
-    # Solar Forecast
+    # Solar Forecast (Tages-Restwert + stuendliches Raster fuer morgen)
     solar_remaining = get_solar_forecast(hass, config)
+    solar_hourly = get_solar_forecast_hourly(hass, config)
 
     # --- Forecast für morgen auslesen ---
     tomorrow_ent = config.get("pv_forecast_tomorrow_entity")
@@ -266,8 +339,8 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
             except ValueError:
                 pass
 
-    # --- Autarkie-Zeitpunkt berechnen ---
-    autarky_time = calculate_autarky_time_tomorrow(profile_manager, solar_remaining, config)
+    # --- Autarkie-Zeitpunkt berechnen (auf Basis des stuendlichen Rasters) ---
+    autarky_time = calculate_autarky_time_tomorrow(profile_manager, solar_hourly, config)
 
     # 5. Rückgabe des gesamten Datenpakets
     return {
@@ -276,6 +349,7 @@ async def update_forecasts_and_finances(hass, profile_manager, config, deltas, h
         "forecast_next_hour": round(next_full, 3),
         "morning_reserve": round(rest_demand * 0.2, 2), 
         "solar_remaining": solar_remaining,
+        "solar_hourly": solar_hourly,
         "prices": prices,
         "ai_price_summary": ai_summary,
         "savings": {k: round(v, 4) for k, v in savings.items()},

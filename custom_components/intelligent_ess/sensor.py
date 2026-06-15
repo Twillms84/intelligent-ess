@@ -6,10 +6,9 @@ from .const import DOMAIN
 async def async_setup_entry(hass, entry, async_add_entities):
     """Setzt die Sensoren basierend auf dem Coordinator-Update-Zyklus auf."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
-    # Sicherstellen, dass Daten vorhanden sind
-    await coordinator.async_config_entry_first_refresh()
-    
+    # Hinweis: Der erste Refresh erfolgt zentral in __init__.py vor dem Laden
+    # der Plattformen. Ein erneuter Aufruf hier waere redundant.
+
     async_add_entities([
         IntelligentESSActionSensor(coordinator),
         IntelligentESSConsumptionSensor(coordinator),
@@ -41,8 +40,8 @@ class IntelligentESSBase(CoordinatorEntity, SensorEntity):
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.entry.entry_id)},
             "name": "Intelligent ESS",
-            "manufacturer": "Gemini AI Custom",
-            "model": "Modular V3"
+            "manufacturer": "Open Intelligent ESS",
+            "model": "Smart Battery Manager"
         }
 
 class IntelligentESSActionSensor(IntelligentESSBase):

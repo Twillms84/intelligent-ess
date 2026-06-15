@@ -90,7 +90,7 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
             
             # --- 3. EXAKTE NACHTRESERVE BERECHNEN ---
             now = dt_util.now()
-            autarky_str = data.get("autarky_start_tomorrow", "08:00")
+            autarky_str = data.get("autarky_time_tomorrow", "08:00")
             
             # Fallback auf 8 Uhr, falls "Nicht erreicht" oder "Keine Stundenwerte"
             autarky_hour = 8 
@@ -155,6 +155,24 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
                 empty_time_str = "Reicht bis zum Autarkiestart"
 
             # 2. DER DATEN-GETRIEBENE PROMPT
+            # Preis-Eckwerte aus der vorberechneten Zusammenfassung ableiten.
+            ai_summary = data.get("ai_price_summary", {}) or {}
+            min_p = ai_summary.get("min_price", "?")
+            max_p = ai_summary.get("max_price", "?")
+            min_t = ai_summary.get("min_time", "?")
+            max_t = ai_summary.get("max_time", "?")
+            avg_p = ai_summary.get("avg_price", "?")
+
+            # Kompakte 12h-Preisuebersicht (Stunde=Preis in ct) fuer den Prompt.
+            summary_parts = []
+            for p in prices[:12]:
+                try:
+                    t_label = dt_util.parse_datetime(p["start_time"]).strftime("%H:%M")
+                    summary_parts.append(f"{t_label}={round(p['total'] * 100, 1)}ct")
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    continue
+            price_summary = " | ".join(summary_parts) if summary_parts else "keine Preisdaten"
+
             prompt = (
                 "Du bist 'Intelligent ESS', ein smarter KI-Energiemanager für ein Smart Home. "
                 "Hier sind die harten Fakten für heute:\n\n"
@@ -178,8 +196,8 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
                 f"🚨 WICHTIG: Der Akku läuft voraussichtlich schon {empty_time_str} leer! Deine Sperre ('hold_start') MUSS "
                 "vor diesem Zeitpunkt beginnen. Wenn du die Sperre erst in den günstigsten Stunden setzt (z.B. von 4-6 Uhr), der Akku aber "
                 "vorher schon leer ist, war die Sperre sinnlos. Ziehe die Sperre also rechtzeitig vor, um Netzstrom zu nutzen, wenn er am billigsten "
-                "VERFÜGBAR ist, und rette die restliche Akku-Ladung physisch in die teuerste Morgenstunde ({max_t} Uhr).\n"
-                "- LADE-CHECK: Nur wenn der Tiefstpreis extrem billig ist, setze zusätzlich \"charge\": \"YES\" um {min_t} Uhr.\n\n"
+                f"VERFÜGBAR ist, und rette die restliche Akku-Ladung physisch in die teuerste Morgenstunde ({max_t} Uhr).\n"
+                f"- LADE-CHECK: Nur wenn der Tiefstpreis extrem billig ist, setze zusätzlich \"charge\": \"YES\" um {min_t} Uhr.\n\n"
                 "ANTWORTE EXAKT IN DIESEM FORMAT:\n"
                 "[Dein ausführlicher, zahlenbasierter Analyse-Text für den Nutzer]\n"
                 "RESULT: {\n"
@@ -192,12 +210,13 @@ class IntelligentESSKIButton(IntelligentESSBaseButton):
             max_retries = 3
             retry_delay = 5
             full_text = ""
+            agent_id = config.get("conversation_agent") or "conversation.home_assistant"
             
             for attempt in range(max_retries):
                 try:
                     result = await self.hass.services.async_call(
                         "conversation", "process", 
-                        {"text": prompt, "agent_id": "conversation.google_ai_conversation_2"}, 
+                        {"text": prompt, "agent_id": agent_id}, 
                         blocking=True, return_response=True
                     )
                     

@@ -213,32 +213,46 @@ class ProfileManager:
             next_hour_full = round(self.get_profile_value(next_time, default_usage), 2)
 
             return current_hour_rem, next_hour_full
-        except:
+        except Exception:
             return 0.3, float(default_usage)
 
     def calculate_best_profile(self, data, options):
+        """Baut ein 24h-Lade-Raster (0/1) auf Basis von Preisen, Bedarf und PV.
+
+        Liefert eine Liste mit 24 Eintraegen (Stunde 0..23): 1 = guenstig laden.
+        """
         profile = [0] * 24
         prices = data.get("prices", [])
-        solar = data.get("solar_forecast", {})
-        
+        # Stuendliches PV-Raster aus den Analytics ({ "YYYY-MM-DD HH:00:00": kWh }).
+        solar = data.get("solar_hourly", {}) or {}
+
         def_usage = float(options.get("default_usage", 0.85))
-        advantage = float(options.get("charge_delta_threshold", 5.0))
+        # Schwelle kommt in ct aus der Config -> in EUR/kWh umrechnen (Preise sind in EUR/kWh).
+        advantage_eur = float(options.get("charge_delta_threshold", 5.0)) / 100.0
 
         if not prices or not options.get("auto_charge_enabled", True):
             return profile
 
-        avg_price = sum(p['total'] for p in prices[:24]) / len(prices[:24])
+        window = prices[:24]
+        if not window:
+            return profile
+        avg_price = sum(p["total"] for p in window) / len(window)
 
-        for p_info in prices[:24]:
+        for p_info in window:
             start_time_str = p_info.get("start_time") or p_info.get("startsAt")
-            p_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+            if not start_time_str:
+                continue
+            p_time = dt_util.parse_datetime(str(start_time_str))
+            if not p_time:
+                continue
             p_time = dt_util.as_local(p_time)
-            
+
             predicted_hr = self.get_profile_value(p_time, def_usage)
-            solar_val = solar.get(p_time.strftime("%Y-%m-%d %H:00:00"), 0)
+            solar_val = float(solar.get(p_time.strftime("%Y-%m-%d %H:00:00"), 0) or 0)
             net_need = predicted_hr - solar_val
 
-            if net_need > 0 and p_info['total'] < (avg_price - advantage):
+            # Laden, wenn ein Restbedarf besteht UND der Preis deutlich unter dem Schnitt liegt.
+            if net_need > 0 and p_info["total"] < (avg_price - advantage_eur):
                 profile[p_time.hour] = 1
 
         return profile
