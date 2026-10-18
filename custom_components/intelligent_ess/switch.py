@@ -39,6 +39,17 @@ class ESSConfigSwitch(SwitchEntity):
         new_opts = {**self._entry.options, self._key: True}
         self.hass.config_entries.async_update_entry(self._entry, options=new_opts)
 
+        # Beim Aktivieren der Ladeautomatik direkt eine Vorschau zeigen,
+        # was die Automatik berechnet und tun wird.
+        if self._key == "auto_charge_enabled":
+            coordinator = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id)
+            if coordinator:
+                try:
+                    await coordinator.async_request_refresh()
+                    await coordinator.async_post_preview()
+                except Exception:  # noqa: BLE001 - Vorschau darf das Schalten nie blockieren
+                    pass
+
     async def async_turn_off(self, **kwargs):
         new_opts = {**self._entry.options, self._key: False}
         self.hass.config_entries.async_update_entry(self._entry, options=new_opts)

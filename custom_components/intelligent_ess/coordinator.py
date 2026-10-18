@@ -1,6 +1,7 @@
 import logging
 import json
 import os
+import asyncio
 from datetime import timedelta
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -41,6 +42,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self._last_learning_date = None # Merkt sich, wann die KI zuletzt trainiert wurde
         self._update_cycles = 0         # Zähler für das Speichern der Savings
         self._switch_timers = {}        # Einschalt-Zeitpunkte der Smart-Switches
+        self._hold_latch_until = None   # Anti-Flatter-Latch für autonomes SmartHold
 
         self.data = {
             "house_kw": 0.0,
@@ -124,35 +126,49 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             gates = self._evaluate_gates(config, current, now)
             self.data["gates"] = gates
 
-            # 6. SCHEDULER
-            # KI-Lade-Fahrplan (24h 0/1-Raster) aus Preisen, Bedarf und PV ableiten
-            ai_profile = self.profile_manager.calculate_best_profile(self.data, config)
-            # SmartCharge-Gate: Nur laden, wenn prognostiziert zu wenig PV kommt.
-            if not gates["smartcharge_allowed"]:
-                ai_profile = [0] * 24
-            self.data["ai_charge_profile"] = ai_profile
+            # 6. STRATEGIE & STEUERUNG
+            # Hauptschalter "Ladeautomatik aktiv" ist eine harte Leitplanke:
+            # ist er AUS, unternimmt die Integration NICHTS von selbst.
+            auto_on = bool(config.get("auto_charge_enabled", False))
 
-            strat, msg, lock_needed = calculate_strategy(config, self.hass.states, ai_profile)
+            if not auto_on:
+                # ===== MASTER-AUS: keine Eingriffe, Hardware in Normalzustand =====
+                self._hold_latch_until = None
+                self.data["ai_charge_profile"] = [0] * 24
+                self.data.update({
+                    "strat": "NORMAL",
+                    "strat_msg": "Ladeautomatik AUS – keine Eingriffe",
+                    "discharge_lock_active": False,
+                    "fahrplan": "Automatik deaktiviert",
+                })
+                await self._release_all(config)
+            else:
+                # ===== AUTOMATIK AN =====
+                # KI-Lade-Fahrplan (24h 0/1-Raster) aus Preisen, Bedarf und PV ableiten
+                ai_profile = self.profile_manager.calculate_best_profile(self.data, config)
+                # SmartCharge-Gate: Nur laden, wenn prognostiziert zu wenig PV kommt.
+                if not gates["smartcharge_allowed"]:
+                    ai_profile = [0] * 24
+                self.data["ai_charge_profile"] = ai_profile
 
-            # SmartHold-Gate (autonom): nur greifen, wenn keine hoehere Prioritaet
-            # (manuelles Laden/Sperren, KI-Timer) bereits aktiv ist.
-            if strat == "NORMAL" and gates["smarthold_allowed"]:
-                strat = "HOLD"
-                msg = (
-                    f"SmartHold: Nachtreserve fehlt ({gates['nacht_defizit']} kWh), "
-                    "Morgenpreis hoch – Akku wird gespart."
-                )
-                lock_needed = True
+                strat, msg, lock_needed = calculate_strategy(config, self.hass.states, ai_profile)
 
-            self.data.update({
-                "strat": strat,
-                "strat_msg": msg,
-                "discharge_lock_active": lock_needed,
-                "fahrplan": f"Status: {strat} | Bedarf: {self.data.get('rest_demand_daily', 0)}kWh"
-            })
+                # Autonomes SmartHold nur, wenn keine hoehere Prioritaet (manuelles
+                # Laden/Sperren, KI-Timer) aktiv ist – mit Anti-Flatter-Latch.
+                if strat == "NORMAL":
+                    strat, msg, lock_needed = self._apply_autonomous_hold(gates, now, strat, msg, lock_needed)
+                else:
+                    self._hold_latch_until = None
 
-            # 7. HARDWARE-STEUERUNG
-            await self._handle_hardware_control(config, lock_needed, strat)
+                self.data.update({
+                    "strat": strat,
+                    "strat_msg": msg,
+                    "discharge_lock_active": lock_needed,
+                    "fahrplan": f"Status: {strat} | Bedarf: {self.data.get('rest_demand_daily', 0)}kWh"
+                })
+
+                # 7. HARDWARE-STEUERUNG
+                await self._handle_hardware_control(config, lock_needed, strat)
 
             # 8. REGELMÄSSIGES SPEICHERN (Alle 15 Minuten)
             self._update_cycles += 1
@@ -168,6 +184,45 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Update fehlgeschlagen: {e}")
 
     # --- HELPER METHODEN ---
+    async def _set_wr_limit(self, entity_id, target, reason):
+        """Setzt das Wechselrichter-Limit zuverlässig.
+
+        Re-assert nur bei echter Abweichung; bei nicht verfügbarer Entität oder
+        Schreibfehler wird gewarnt (kein stilles Verschlucken) und einmal
+        wiederholt – entscheidend für eine verlässliche Entladesperre.
+        """
+        ent_state = self.hass.states.get(entity_id)
+        if not ent_state or ent_state.state in ('unknown', 'unavailable', 'none'):
+            _LOGGER.warning(
+                "WR-Limit-Entität %s nicht verfügbar – Sperre/Freigabe konnte NICHT gesetzt werden!",
+                entity_id,
+            )
+            return
+
+        try:
+            current_val = float(ent_state.state)
+        except (ValueError, TypeError):
+            current_val = None
+
+        # Schon korrekt eingestellt -> nichts tun (verhindert Service-Spam).
+        if current_val is not None and abs(current_val - target) <= 0.1:
+            return
+
+        for attempt in range(2):
+            try:
+                await self.hass.services.async_call(
+                    "number", "set_value",
+                    {"entity_id": entity_id, "value": target},
+                    blocking=True,
+                )
+                _LOGGER.info("WR-Limit -> %s (%s)", target, reason)
+                return
+            except Exception as ex:
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                else:
+                    _LOGGER.warning("WR-Limit %s konnte nicht gesetzt werden: %s", entity_id, ex)
+
     async def _handle_hardware_control(self, config, lock_needed, strat):
         # 1. Haupt-Limit (Sperre/Freigabe)
         limit_entity = config.get("wr_limit_entity")
@@ -175,32 +230,178 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             lock_value = float(config.get("wr_lock_value", 0.0))
             unlock_value = float(config.get("wr_unlock_value", 80.0))
             target_limit = lock_value if lock_needed else unlock_value
-            ent_state = self.hass.states.get(limit_entity)
-            
-            if ent_state and ent_state.state not in ['unknown', 'unavailable', 'none']:
-                try:
-                    if abs(float(ent_state.state) - target_limit) > 0.1:
-                        await self.hass.services.async_call(
-                            "number", "set_value", {"entity_id": limit_entity, "value": target_limit}
-                        )
-                        _LOGGER.info("WR-Limit angepasst -> %s (Grund: %s)", target_limit, strat)
-                except ValueError: 
-                    pass
+            await self._set_wr_limit(limit_entity, target_limit, "Sperre" if lock_needed else strat)
 
         # 2. Spezifische Lade-Steuerung (Falls aktiv)
         charge_control_entity = config.get("battery_charge_switch")
         if charge_control_entity:
-            if strat == "LADEN":
-                await self.hass.services.async_call(
-                    "switch", "turn_on", {"entity_id": charge_control_entity}
-                )
-            else:
-                await self.hass.services.async_call(
-                    "switch", "turn_off", {"entity_id": charge_control_entity}
-                )
+            action = "turn_on" if strat == "LADEN" else "turn_off"
+            await self.hass.services.async_call(
+                "switch", action, {"entity_id": charge_control_entity}
+            )
 
         # 3. Smart-Switches: Ueberschuss-Verbraucher gestaffelt schalten
         await self._handle_smart_switches(config)
+
+    async def _release_all(self, config):
+        """Master-AUS: Wechselrichter freigeben, Laden aus, Smart-Switches aus."""
+        limit_entity = config.get("wr_limit_entity")
+        if limit_entity:
+            unlock_value = float(config.get("wr_unlock_value", 80.0))
+            await self._set_wr_limit(limit_entity, unlock_value, "Automatik AUS – Freigabe")
+
+        charge_control_entity = config.get("battery_charge_switch")
+        if charge_control_entity:
+            await self.hass.services.async_call(
+                "switch", "turn_off", {"entity_id": charge_control_entity}
+            )
+
+        # Von uns zugeschaltete Überschuss-Verbraucher wieder abschalten.
+        for s in (config.get("smart_switches") or []):
+            if s in self._switch_timers:
+                await self.hass.services.async_call(
+                    "switch", "turn_off", {"entity_id": s}
+                )
+        self._switch_timers = {}
+
+    def _apply_autonomous_hold(self, gates, now, strat, msg, lock_needed):
+        """Autonome Entladesperre mit Anti-Flatter-Latch.
+
+        Greift das Gate, wird die Sperre bis zur Morgen-Peak-Stunde "gelatcht",
+        damit sie nicht minütlich an/aus springt, wenn Werte um die Schwelle
+        wackeln. Solange Akku-Energie da ist, bleibt die Sperre bis dahin aktiv.
+        """
+        if gates.get("smarthold_allowed", False):
+            self._hold_latch_until = self._compute_latch_end(now)
+            return (
+                "HOLD",
+                (f"SmartHold: Nachtreserve fehlt ({gates.get('nacht_defizit')} kWh), "
+                 "Morgenpreis hoch – Akku wird bis zum Morgen-Peak gespart."),
+                True,
+            )
+
+        # Gate aktuell zu, aber noch innerhalb des Latch-Fensters und Akku vorhanden?
+        if self._hold_latch_until is not None:
+            battery_left = gates.get("usable_battery", 0) or 0
+            if now < self._hold_latch_until and battery_left > 0.05:
+                until = dt_util.as_local(self._hold_latch_until).strftime("%H:%M")
+                return "HOLD", f"SmartHold gehalten (Anti-Flatter-Schutz bis {until} Uhr)", True
+            self._hold_latch_until = None
+
+        return strat, msg, lock_needed
+
+    def _compute_latch_end(self, now):
+        """Ende des SmartHold-Latch = Morgen-Peak-Stunde (max. 10h ab jetzt)."""
+        summary = self.data.get("ai_price_summary", {}) or {}
+        peak_hour = None
+        mt = summary.get("max_time")
+        if mt:
+            try:
+                peak_hour = int(str(mt).split(":")[0])
+            except (ValueError, IndexError):
+                peak_hour = None
+
+        if peak_hour is None:
+            end = now + timedelta(hours=3)
+        else:
+            end = now.replace(hour=peak_hour, minute=59, second=0, microsecond=0)
+            if end <= now:
+                end = end + timedelta(days=1)
+
+        return min(end, now + timedelta(hours=10))
+
+    # --- VORSCHAU (Dry-Run, ohne Nebenwirkungen) ---
+    @staticmethod
+    def _hours_to_windows(hours):
+        """Macht aus [2,3,4,22,23] -> '02:00–05:00, 22:00–00:00'."""
+        if not hours:
+            return ""
+        hours = sorted(hours)
+        parts = []
+        start = prev = hours[0]
+        for h in hours[1:]:
+            if h == prev + 1:
+                prev = h
+            else:
+                parts.append(f"{start:02d}:00–{(prev + 1) % 24:02d}:00")
+                start = prev = h
+        parts.append(f"{start:02d}:00–{(prev + 1) % 24:02d}:00")
+        return ", ".join(parts)
+
+    def build_preview_text(self):
+        """Erzeugt einen Klartext-Plan dessen, was die Automatik tun würde.
+
+        Liest nur self.data – verändert nichts.
+        """
+        data = self.data or {}
+        config = {**self.entry.data, **self.entry.options}
+        gates = data.get("gates", {}) or {}
+        summary = data.get("ai_price_summary", {}) or {}
+        auto_on = bool(config.get("auto_charge_enabled", False))
+
+        # Lade-Fahrplan als Vorschau berechnen (unabhängig vom Hauptschalter).
+        preview_cfg = dict(config)
+        preview_cfg["auto_charge_enabled"] = True
+        profile = self.profile_manager.calculate_best_profile(data, preview_cfg)
+        if not gates.get("smartcharge_allowed"):
+            profile = [0] * 24
+        charge_windows = self._hours_to_windows([h for h, v in enumerate(profile) if v == 1])
+
+        head = "AN" if auto_on else "AUS (Vorschau – so würde die Automatik bei Aktivierung handeln)"
+        lines = [
+            f"Automatik: {head}",
+            "",
+            f"🔋 Akku nutzbar: {gates.get('usable_battery', '?')} kWh  |  ☀️ PV-Rest heute: {data.get('solar_remaining', '?')} kWh",
+            f"🏠 Bedarf bis Autarkiestart: {data.get('night_demand', '?')} kWh",
+            f"📈 Preis: Tief {summary.get('min_price', '?')}ct ({summary.get('min_time', '?')}) | "
+            f"Hoch {summary.get('max_price', '?')}ct ({summary.get('max_time', '?')})",
+            "",
+        ]
+
+        # SmartCharge
+        if gates.get("smartcharge_allowed"):
+            if charge_windows:
+                lines.append(f"⚡ SmartCharge: AKTIV – geplantes Laden: {charge_windows}")
+            else:
+                lines.append("⚡ SmartCharge: offen, aber aktuell kein günstiges Fenster mit Restbedarf.")
+        else:
+            lines.append(
+                f"⚡ SmartCharge: AUS – genug PV erwartet (Tages-PV-Bilanz {gates.get('pv_day_balance', '?')} kWh)."
+            )
+
+        # SmartHold
+        if gates.get("smarthold_allowed"):
+            lines.append(
+                f"🔒 SmartHold: AKTIV – Entladesperre, Akku wird für den teuren Morgen gespart "
+                f"(Defizit {gates.get('nacht_defizit', '?')} kWh)."
+            )
+        else:
+            grund = "Nachtreserve reicht" if not gates.get("reserve_insufficient") else "Morgenpreis nicht hoch genug"
+            lines.append(f"🔒 SmartHold: AUS – {grund}.")
+
+        lines += [
+            "",
+            f"➡️ Aktueller Zustand: {data.get('strat', '?')} – {data.get('strat_msg', '')}",
+            "",
+            "ℹ️ Vorschau – es wurde nichts verändert.",
+        ]
+        return "\n".join(lines)
+
+    async def async_post_preview(self):
+        """Baut die Vorschau und zeigt sie als persistente Benachrichtigung."""
+        try:
+            text = self.build_preview_text()
+        except Exception as ex:
+            _LOGGER.warning("Vorschau konnte nicht erstellt werden: %s", ex)
+            text = f"Vorschau konnte nicht erstellt werden: {ex}"
+        await self.hass.services.async_call(
+            "persistent_notification", "create",
+            {
+                "title": "Intelligent ESS – Automatik-Vorschau",
+                "message": text,
+                "notification_id": "ess_preview",
+            },
+        )
 
     async def _handle_smart_switches(self, config):
         switches = config.get("smart_switches") or []

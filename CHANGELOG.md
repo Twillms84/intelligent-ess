@@ -62,3 +62,28 @@
 - Entfernt: tote Felder `sun_yield_threshold` und `solar_buy_threshold`.
 - `wr_unlock_value`-Default vereinheitlicht (80). `const.py` aufgeräumt.
   Doppelte README im Komponentenordner entfernt.
+
+## 1.0.3 – Hauptschalter, Vorschau & stabilere Entladesperre
+
+### Ladeautomatik ist jetzt ein echter Hauptschalter
+- Ist „Ladeautomatik aktiv" AUS, unternimmt die Integration **nichts** mehr von
+  selbst: kein SmartCharge, kein (autonomes) SmartHold, keine Smart-Switches.
+  Der Wechselrichter wird in den Normalzustand freigegeben, Laden aus, eine
+  aktive Sperre wird gelöst. Behebt das „Eigenleben" trotz deaktivierter Automatik.
+- **Hinweis:** Der Hauptschalter ist standardmäßig AUS. Nach dem Update muss er
+  einmal bewusst eingeschaltet werden, damit die Automatik arbeitet.
+
+### Vorschau vor der Aktivierung
+- Beim Einschalten von „Ladeautomatik aktiv" erscheint automatisch eine
+  Benachrichtigung mit dem geplanten Verhalten (SmartCharge-Fenster,
+  SmartHold-Status, Kennzahlen) – ohne dass etwas ausgeführt wird.
+- Neuer Button **„Automatik-Vorschau"** zeigt denselben Dry-Run jederzeit an.
+
+### Zuverlässigere Entladesperre
+- WR-Limit wird jetzt robust gesetzt: Re-Assert bei Abweichung, 1× Wiederholung
+  bei Fehler, **Warnung im Log** statt stillem Verschlucken, blockierender
+  Service-Call. Nicht verfügbare Limit-Entität wird deutlich geloggt.
+- **Anti-Flatter-Latch** für autonomes SmartHold: Einmal ausgelöst, bleibt die
+  Sperre bis zur Morgen-Peak-Stunde aktiv (max. 10 h) und springt nicht mehr
+  minütlich an/aus, wenn Werte um die Schwelle schwanken. Fällt automatisch,
+  sobald der Akku leer ist oder der Peak vorbei ist.
