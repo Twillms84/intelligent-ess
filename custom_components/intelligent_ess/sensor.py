@@ -17,7 +17,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         # Nutzt den Key 'rest_demand_daily'
         IntelligentESSGenericSensor(coordinator, "Restbedarf Heute", "rest_demand_daily", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Nachtreserve", "morning_reserve", "kWh"),
-        IntelligentESSGenericSensor(coordinator, "Fahrplan", "fahrplan", None),
+        IntelligentESSFahrplanSensor(coordinator),
         
         # Die aufgeteilten Forecast-Sensoren
         IntelligentESSForecastSensorCurrent(coordinator),
@@ -66,6 +66,38 @@ class IntelligentESSActionSensor(IntelligentESSBase):
             "tages_pv_bilanz_kwh": gates.get("pv_day_balance"),
             "morgenpreis_hoch": gates.get("morning_price_high"),
         }
+
+class IntelligentESSFahrplanSensor(IntelligentESSBase):
+    """Fahrplan: zeigt den Kurzstatus als State und den vollen Plan als Attribute."""
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Intelligent ESS Fahrplan"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_fahrplan"
+        self._attr_icon = "mdi:calendar-clock"
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("fahrplan", "Warte auf Daten...")
+
+    @property
+    def extra_state_attributes(self):
+        plan = self.coordinator.data.get("plan", {}) or {}
+        attrs = {
+            "fahrplan_text": self.coordinator.data.get("fahrplan_text", ""),
+            "modus": plan.get("modus"),
+            "aktion": plan.get("aktion"),
+            "grund": plan.get("grund"),
+            "naechste_aktion": plan.get("naechste_aktion"),
+            "ladefenster": plan.get("ladefenster"),
+            "sperrfenster": plan.get("sperrfenster"),
+            "smartcharge_erlaubt": plan.get("smartcharge_erlaubt"),
+            "smarthold_erlaubt": plan.get("smarthold_erlaubt"),
+        }
+        # Kennzahlen flach dazu, damit sie einzeln als Attribut nutzbar sind.
+        for k, v in (plan.get("kennzahlen") or {}).items():
+            attrs[k] = v
+        return attrs
+
 
 class IntelligentESSGenericSensor(IntelligentESSBase):
     """Universal-Sensor für einfache Werte wie Restbedarf oder Fahrplan."""

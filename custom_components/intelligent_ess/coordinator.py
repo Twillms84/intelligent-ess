@@ -170,6 +170,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 # 7. HARDWARE-STEUERUNG
                 await self._handle_hardware_control(config, lock_needed, strat)
 
+            # 7b. FAHRPLAN zusammenstellen (detailliert, fuers Dashboard)
+            self._compose_fahrplan(config, gates, auto_on, now)
+
             # 8. REGELMÄSSIGES SPEICHERN (Alle 15 Minuten)
             self._update_cycles += 1
             if self._update_cycles >= 15:
@@ -182,6 +185,102 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         except Exception as e:
             _LOGGER.error("Fehler im Coordinator: %s", e)
             raise UpdateFailed(f"Update fehlgeschlagen: {e}")
+
+    # --- FAHRPLAN ---
+    def _hold_window_from_options(self, config):
+        """Liest ein (manuell/KI-gesetztes) aktives Sperrfenster aus den Optionen."""
+        if not config.get("man_hold_s1_enabled", False):
+            return None
+        s = config.get("man_hold_s1_start")
+        e = config.get("man_hold_s1_end")
+        if not s or not e:
+            return None
+        return f"{str(s)[:5]}–{str(e)[:5]}"
+
+    def _compose_fahrplan(self, config, gates, auto_on, now):
+        """Baut einen detaillierten, lesbaren Fahrplan + strukturierte Attribute.
+
+        Setzt self.data['fahrplan'] (Kurzstatus als State), self.data['plan']
+        (strukturiert fuer Automationen) und self.data['fahrplan_text']
+        (mehrzeilig fuer die Dashboard-Anzeige).
+        """
+        strat = self.data.get("strat", "NORMAL")
+        reason = self.data.get("strat_msg", "")
+        profile = self.data.get("ai_charge_profile", [0] * 24)
+        summary = self.data.get("ai_price_summary", {}) or {}
+
+        charge_windows = self._hours_to_windows([h for h, v in enumerate(profile) if v == 1])
+
+        # Sperrfenster: aktiver Latch (autonom) oder manuell/KI gesetztes Fenster.
+        hold_window = None
+        if self._hold_latch_until is not None:
+            hold_window = f"bis {dt_util.as_local(self._hold_latch_until).strftime('%H:%M')}"
+        else:
+            hold_window = self._hold_window_from_options(config)
+
+        # Naechste geplante Aktion in Worten.
+        if not auto_on:
+            next_action = "Keine – Automatik ist aus"
+        elif strat == "LADEN":
+            next_action = "Lädt gerade aus dem Netz"
+        elif strat == "HOLD":
+            next_action = f"Entladesperre aktiv ({hold_window})" if hold_window else "Entladesperre aktiv"
+        elif charge_windows:
+            next_action = f"Netzladung geplant: {charge_windows}"
+        elif gates.get("smarthold_allowed"):
+            next_action = "Entladesperre vorgesehen (Morgen-Peak)"
+        else:
+            next_action = "Normalbetrieb (PV/Batterie), kein Eingriff geplant"
+
+        figures = {
+            "akku_nutzbar_kwh": gates.get("usable_battery"),
+            "pv_rest_heute_kwh": self.data.get("solar_remaining"),
+            "pv_morgen_kwh": self.data.get("pv_tomorrow_total"),
+            "nacht_bedarf_kwh": self.data.get("night_demand"),
+            "nacht_defizit_kwh": gates.get("nacht_defizit"),
+            "preis_tief_ct": summary.get("min_price"),
+            "preis_tief_zeit": summary.get("min_time"),
+            "preis_hoch_ct": summary.get("max_price"),
+            "preis_hoch_zeit": summary.get("max_time"),
+        }
+
+        plan = {
+            "modus": "AN" if auto_on else "AUS",
+            "aktion": strat,
+            "grund": reason,
+            "naechste_aktion": next_action,
+            "ladefenster": charge_windows or "—",
+            "sperrfenster": hold_window or "—",
+            "smartcharge_erlaubt": gates.get("smartcharge_allowed"),
+            "smarthold_erlaubt": gates.get("smarthold_allowed"),
+            "kennzahlen": figures,
+        }
+
+        # Kurzstatus als Sensor-State (begrenzte Laenge).
+        short = f"{'AUS' if not auto_on else strat}: {next_action}"
+        self.data["fahrplan"] = short[:255]
+        self.data["plan"] = plan
+
+        # Mehrzeiliger Klartext.
+        lines = [
+            f"Modus: {'AN' if auto_on else 'AUS'}  |  Aktion: {strat}",
+            f"➡️ {next_action}",
+        ]
+        if reason:
+            lines.append(f"Grund: {reason}")
+        lines.append(
+            f"⚡ Ladefenster: {charge_windows or '—'}   🔒 Sperrfenster: {hold_window or '—'}"
+        )
+        lines.append(
+            f"🔋 Akku nutzbar {figures['akku_nutzbar_kwh']} kWh  |  "
+            f"☀️ PV-Rest {figures['pv_rest_heute_kwh']} kWh  |  "
+            f"Nacht-Defizit {figures['nacht_defizit_kwh']} kWh"
+        )
+        lines.append(
+            f"📈 Tief {figures['preis_tief_ct']}ct ({figures['preis_tief_zeit']})  |  "
+            f"Hoch {figures['preis_hoch_ct']}ct ({figures['preis_hoch_zeit']})"
+        )
+        self.data["fahrplan_text"] = "\n".join(lines)
 
     # --- HELPER METHODEN ---
     async def _set_wr_limit(self, entity_id, target, reason):

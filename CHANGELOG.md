@@ -87,3 +87,18 @@
   Sperre bis zur Morgen-Peak-Stunde aktiv (max. 10 h) und springt nicht mehr
   minütlich an/aus, wenn Werte um die Schwelle schwanken. Fällt automatisch,
   sobald der Akku leer ist oder der Peak vorbei ist.
+
+## 1.0.4 – Detaillierter Fahrplan
+
+- Der Sensor **„Fahrplan"** zeigt jetzt im Klartext, was die Automatik vorhat:
+  aktuelle Aktion, nächste geplante Aktion, konkrete Lade- und Sperrfenster
+  sowie die Kennzahlen (nutzbarer Akku, PV-Rest/-Prognose, Nacht-Defizit,
+  Preis-Tief/-Hoch mit Uhrzeiten).
+- Neue Sensor-Attribute (`fahrplan_text`, `modus`, `aktion`, `naechste_aktion`,
+  `ladefenster`, `sperrfenster`, `smartcharge_erlaubt`, `smarthold_erlaubt`
+  und alle Kennzahlen einzeln) für Dashboard-Karten und Automationen.
+- Ist die Ladeautomatik AUS, steht das klar im Fahrplan („AUS – keine Eingriffe").
+
+Hinweis: Diese Verbesserungen wirken nur, wenn Home Assistant die Integration
+in Version 1.0.4 tatsächlich lädt (HACS-Update + HA-Neustart). Ein Bearbeiten
+des Git-Repos allein ändert die laufende Instanz nicht.
