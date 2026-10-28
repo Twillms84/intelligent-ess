@@ -102,3 +102,24 @@
 Hinweis: Diese Verbesserungen wirken nur, wenn Home Assistant die Integration
 in Version 1.0.4 tatsächlich lädt (HACS-Update + HA-Neustart). Ein Bearbeiten
 des Git-Repos allein ändert die laufende Instanz nicht.
+
+## 1.0.5 – Klares Drei-Ebenen-Steuermodell
+
+Komplette Neuordnung der Steuerung, damit "AUS" wirklich AUS heißt und die
+Kontrolle beim Nutzer bleibt:
+
+- **Ebene 1 – Manuelle Zeitfenster** (Laden Slot 1/2, Entladesperre): gelten
+  IMMER, unabhängig von der Automatik. Feste, selbst eingetragene Fenster.
+- **Ebene 2 – Automatik** (Schalter „Ladeautomatik aktiv"): nur wenn AN greifen
+  SmartCharge, autonomes SmartHold und das Überschuss-Schalten der Smart-Switches.
+- **AUS heißt AUS:** Ist die Automatik aus und kein manuelles Fenster aktiv,
+  unternimmt die Integration KEINE Eigenaktion. Der Wechselrichter wird
+  freigegeben. Empfehlungen werden weiterhin berechnet und angezeigt.
+- **Neuer Button „Empfehlung übernehmen":** schreibt die aktuelle Empfehlung
+  (Lade-/Sperrfenster) einmalig in die manuellen Zeitfenster – ohne Dauer-Automatik.
+- Fahrplan zeigt jetzt zusätzlich die **Empfehlung** separat an (`empfehlung`),
+  auch wenn die Automatik aus ist, plus Quelle der aktiven Aktion (manuell/Automatik).
+
+Wichtig: Diese Logik wirkt erst, wenn Home Assistant die Integration in 1.0.5
+tatsächlich lädt (HACS-Update auf 1.0.5 + HA-Neustart). Reines Bearbeiten des
+Git-Repos ändert die laufende Instanz nicht.

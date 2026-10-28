@@ -21,6 +21,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSUpdateButton(coordinator, entry),
         IntelligentESSTrainAIButton(coordinator, entry),
         IntelligentESSPreviewButton(coordinator, entry),
+        IntelligentESSApplyRecommendationButton(coordinator, entry),
         IntelligentESSKIButton(coordinator, entry),
     ])
     return True
@@ -72,6 +73,30 @@ class IntelligentESSPreviewButton(IntelligentESSBaseButton):
         _LOGGER.info("Automatik-Vorschau angefordert.")
         await self.coordinator.async_request_refresh()
         await self.coordinator.async_post_preview()
+
+
+class IntelligentESSApplyRecommendationButton(IntelligentESSBaseButton):
+    """Überträgt die aktuelle (deterministische) Empfehlung in die manuellen Zeitfenster."""
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "Empfehlung übernehmen", "mdi:check-decagram", "apply_rec_btn", None)
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Empfehlung übernehmen angefordert.")
+        # Frische Daten, dann Empfehlung in manuelle Slots schreiben.
+        await self.coordinator.async_request_refresh()
+        try:
+            result = self.coordinator.apply_recommendation()
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.error("Empfehlung konnte nicht übernommen werden: %s", ex)
+            result = f"Fehler: {ex}"
+        await self.hass.services.async_call(
+            "persistent_notification", "create",
+            {
+                "title": "Intelligent ESS – Empfehlung übernommen",
+                "message": f"{result}\n\nHinweis: Läuft als manuelles Zeitfenster – unabhängig von der Automatik.",
+                "notification_id": "ess_apply_rec",
+            },
+        )
 
 
 class IntelligentESSKIButton(IntelligentESSBaseButton):

@@ -8,7 +8,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .scheduler import calculate_strategy
+from .scheduler import calculate_strategy, evaluate_manual_windows, evaluate_automatic
 # WICHTIG: Hier 'async_get_raw_states' importieren!
 from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
@@ -126,49 +126,54 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             gates = self._evaluate_gates(config, current, now)
             self.data["gates"] = gates
 
-            # 6. STRATEGIE & STEUERUNG
-            # Hauptschalter "Ladeautomatik aktiv" ist eine harte Leitplanke:
-            # ist er AUS, unternimmt die Integration NICHTS von selbst.
+            # 6. STRATEGIE & STEUERUNG (Drei-Ebenen-Modell)
+            #   Ebene 0: Empfehlung – wird IMMER berechnet (nur Anzeige, kein Eingriff)
+            #   Ebene 1: Manuelle Zeitfenster – gelten IMMER (unabhängig vom Hauptschalter)
+            #   Ebene 2: Automatik – nur wenn Hauptschalter "Ladeautomatik aktiv" AN ist
             auto_on = bool(config.get("auto_charge_enabled", False))
 
-            if not auto_on:
-                # ===== MASTER-AUS: keine Eingriffe, Hardware in Normalzustand =====
+            # --- Ebene 0: Empfehlung immer berechnen ---
+            recommendation = self._compute_recommendation(config, gates, now)
+            self.data["recommendation"] = recommendation
+            # Das (bereits gegatete) Lade-Raster dient Anzeige UND Automatik.
+            self.data["ai_charge_profile"] = recommendation["charge_profile"]
+
+            # --- Ebene 1: manuelle Zeitfenster (immer gültig) ---
+            manual = evaluate_manual_windows(config)
+
+            if manual is not None:
+                # Vom Nutzer gesetztes festes Fenster -> hat Vorrang, läuft auch ohne Automatik.
+                strat, msg, lock_needed = manual
                 self._hold_latch_until = None
-                self.data["ai_charge_profile"] = [0] * 24
-                self.data.update({
-                    "strat": "NORMAL",
-                    "strat_msg": "Ladeautomatik AUS – keine Eingriffe",
-                    "discharge_lock_active": False,
-                    "fahrplan": "Automatik deaktiviert",
-                })
-                await self._release_all(config)
-            else:
-                # ===== AUTOMATIK AN =====
-                # KI-Lade-Fahrplan (24h 0/1-Raster) aus Preisen, Bedarf und PV ableiten
-                ai_profile = self.profile_manager.calculate_best_profile(self.data, config)
-                # SmartCharge-Gate: Nur laden, wenn prognostiziert zu wenig PV kommt.
-                if not gates["smartcharge_allowed"]:
-                    ai_profile = [0] * 24
-                self.data["ai_charge_profile"] = ai_profile
-
-                strat, msg, lock_needed = calculate_strategy(config, self.hass.states, ai_profile)
-
-                # Autonomes SmartHold nur, wenn keine hoehere Prioritaet (manuelles
-                # Laden/Sperren, KI-Timer) aktiv ist – mit Anti-Flatter-Latch.
+            elif auto_on:
+                # --- Ebene 2: Automatik aktiv ---
+                strat, msg, lock_needed = "NORMAL", "Normalbetrieb (PV/Batterie)", False
+                auto = evaluate_automatic(recommendation["charge_profile"])
+                if auto is not None:
+                    strat, msg, lock_needed = auto
+                # Autonomes SmartHold nur, wenn sonst NORMAL (Anti-Flatter-Latch).
                 if strat == "NORMAL":
                     strat, msg, lock_needed = self._apply_autonomous_hold(gates, now, strat, msg, lock_needed)
-                else:
-                    self._hold_latch_until = None
+            else:
+                # Automatik AUS und kein manuelles Fenster -> KEINE Eigenaktion.
+                strat, msg, lock_needed = "NORMAL", "Automatik aus – nur Empfehlungen", False
+                self._hold_latch_until = None
 
-                self.data.update({
-                    "strat": strat,
-                    "strat_msg": msg,
-                    "discharge_lock_active": lock_needed,
-                    "fahrplan": f"Status: {strat} | Bedarf: {self.data.get('rest_demand_daily', 0)}kWh"
-                })
+            self.data.update({
+                "strat": strat,
+                "strat_msg": msg,
+                "discharge_lock_active": lock_needed,
+                "auto_on": auto_on,
+                "manual_active": manual is not None,
+            })
 
-                # 7. HARDWARE-STEUERUNG
+            # 7. HARDWARE-STEUERUNG
+            # Nur eingreifen, wenn ein manuelles Fenster aktiv ist ODER die Automatik an ist.
+            # Sonst: Hardware in den Normalzustand freigeben (echtes "AUS heißt AUS").
+            if manual is not None or auto_on:
                 await self._handle_hardware_control(config, lock_needed, strat)
+            else:
+                await self._release_all(config)
 
             # 7b. FAHRPLAN zusammenstellen (detailliert, fuers Dashboard)
             self._compose_fahrplan(config, gates, auto_on, now)
@@ -197,6 +202,81 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             return None
         return f"{str(s)[:5]}–{str(e)[:5]}"
 
+    def _compute_recommendation(self, config, gates, now):
+        """Berechnet die Empfehlung (was die Automatik täte) – ohne jeden Eingriff.
+
+        Dient der Anzeige im Fahrplan und dem Button 'Empfehlung übernehmen'.
+        """
+        # Lade-Raster, gegatet durch SmartCharge.
+        profile = self.profile_manager.calculate_best_profile(self.data, config)
+        if not gates.get("smartcharge_allowed"):
+            profile = [0] * 24
+
+        charge_hours = [h for h, v in enumerate(profile) if v == 1]
+        charge_windows = self._hours_to_windows(charge_hours)
+
+        # Erstes zusammenhängendes Ladefenster für den Übernehmen-Button.
+        charge_start = charge_end = None
+        if charge_hours:
+            start = prev = charge_hours[0]
+            for h in charge_hours[1:]:
+                if h == prev + 1:
+                    prev = h
+                else:
+                    break
+            charge_start = f"{start:02d}:00:00"
+            charge_end = f"{(prev + 1) % 24:02d}:00:00"
+
+        # Sperr-Empfehlung: von jetzt bis zur Morgen-Peak-Stunde, wenn SmartHold offen.
+        hold_recommended = bool(gates.get("smarthold_allowed"))
+        hold_start = hold_end = hold_window = None
+        if hold_recommended:
+            latch_end = self._compute_latch_end(now)
+            hs = now.replace(minute=0, second=0, microsecond=0)
+            hold_start = hs.strftime("%H:%M:00")
+            hold_end = dt_util.as_local(latch_end).strftime("%H:%M:00")
+            hold_window = f"{hold_start[:5]}–{hold_end[:5]}"
+
+        return {
+            "charge_profile": profile,
+            "charge_windows": charge_windows,
+            "charge_start": charge_start,
+            "charge_end": charge_end,
+            "hold_recommended": hold_recommended,
+            "hold_window": hold_window,
+            "hold_start": hold_start,
+            "hold_end": hold_end,
+        }
+
+    def apply_recommendation(self):
+        """Überträgt die aktuelle Empfehlung in die manuellen Zeitfenster.
+
+        Einmaliger Vorgang (kein Automatik-Dauerbetrieb). Rückgabe: Klartext,
+        was übernommen wurde.
+        """
+        rec = self.data.get("recommendation", {}) or {}
+        new_opts = dict(self.entry.options)
+        applied = []
+
+        if rec.get("charge_start") and rec.get("charge_end"):
+            new_opts["man_charge_s1_start"] = rec["charge_start"]
+            new_opts["man_charge_s1_end"] = rec["charge_end"]
+            new_opts["man_charge_s1_enabled"] = True
+            applied.append(f"Laden {rec['charge_start'][:5]}–{rec['charge_end'][:5]}")
+        else:
+            new_opts["man_charge_s1_enabled"] = False
+
+        if rec.get("hold_recommended") and rec.get("hold_start") and rec.get("hold_end"):
+            new_opts["man_hold_s1_start"] = rec["hold_start"]
+            new_opts["man_hold_s1_end"] = rec["hold_end"]
+            new_opts["man_hold_s1_enabled"] = True
+            applied.append(f"Sperre {rec['hold_start'][:5]}–{rec['hold_end'][:5]}")
+        else:
+            new_opts["man_hold_s1_enabled"] = False
+
+        self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
+        return "Übernommen: " + (", ".join(applied) if applied else "nichts (keine Empfehlung aktiv)")
+
     def _compose_fahrplan(self, config, gates, auto_on, now):
         """Baut einen detaillierten, lesbaren Fahrplan + strukturierte Attribute.
 
@@ -206,25 +286,40 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         """
         strat = self.data.get("strat", "NORMAL")
         reason = self.data.get("strat_msg", "")
-        profile = self.data.get("ai_charge_profile", [0] * 24)
         summary = self.data.get("ai_price_summary", {}) or {}
+        manual_active = self.data.get("manual_active", False)
+        rec = self.data.get("recommendation", {}) or {}
 
-        charge_windows = self._hours_to_windows([h for h, v in enumerate(profile) if v == 1])
+        # Empfehlung (was die Automatik täte) – unabhängig davon, ob sie an ist.
+        rec_charge = rec.get("charge_windows") or ""
+        rec_hold = rec.get("hold_window") or ""
+        empfehlung_parts = []
+        if rec_charge:
+            empfehlung_parts.append(f"Laden {rec_charge}")
+        if rec_hold:
+            empfehlung_parts.append(f"Sperre {rec_hold}")
+        empfehlung = " + ".join(empfehlung_parts) if empfehlung_parts else "kein Eingriff nötig"
 
-        # Sperrfenster: aktiver Latch (autonom) oder manuell/KI gesetztes Fenster.
+        # Tatsächlich aktives Lade-/Sperrfenster (nur wenn gehandelt wird).
+        charge_windows = self._hours_to_windows(
+            [h for h, v in enumerate(self.data.get("ai_charge_profile", [0] * 24)) if v == 1]
+        ) if (auto_on or manual_active) else ""
         hold_window = None
         if self._hold_latch_until is not None:
             hold_window = f"bis {dt_util.as_local(self._hold_latch_until).strftime('%H:%M')}"
         else:
             hold_window = self._hold_window_from_options(config)
 
-        # Naechste geplante Aktion in Worten.
-        if not auto_on:
-            next_action = "Keine – Automatik ist aus"
-        elif strat == "LADEN":
-            next_action = "Lädt gerade aus dem Netz"
+        # Naechste/aktuelle Aktion in Worten.
+        if strat == "LADEN":
+            src = "manuelles Fenster" if manual_active else "Automatik"
+            next_action = f"Lädt gerade aus dem Netz ({src})"
         elif strat == "HOLD":
-            next_action = f"Entladesperre aktiv ({hold_window})" if hold_window else "Entladesperre aktiv"
+            src = "manuelles Fenster" if manual_active else "Automatik"
+            next_action = f"Entladesperre aktiv ({hold_window}, {src})" if hold_window else f"Entladesperre aktiv ({src})"
+        elif not auto_on:
+            # Keine Eigenaktion – aber Empfehlung anzeigen.
+            next_action = f"Automatik AUS – Empfehlung: {empfehlung}"
         elif charge_windows:
             next_action = f"Netzladung geplant: {charge_windows}"
         elif gates.get("smarthold_allowed"):
@@ -249,6 +344,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "aktion": strat,
             "grund": reason,
             "naechste_aktion": next_action,
+            "empfehlung": empfehlung,
             "ladefenster": charge_windows or "—",
             "sperrfenster": hold_window or "—",
             "smartcharge_erlaubt": gates.get("smartcharge_allowed"),
@@ -268,6 +364,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         ]
         if reason:
             lines.append(f"Grund: {reason}")
+        lines.append(f"💡 Empfehlung: {empfehlung}")
         lines.append(
             f"⚡ Ladefenster: {charge_windows or '—'}   🔒 Sperrfenster: {hold_window or '—'}"
         )
@@ -339,8 +436,10 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 "switch", action, {"entity_id": charge_control_entity}
             )
 
-        # 3. Smart-Switches: Ueberschuss-Verbraucher gestaffelt schalten
-        await self._handle_smart_switches(config)
+        # 3. Smart-Switches: Ueberschuss-Verbraucher nur bei aktiver Automatik.
+        #    (Gehört zur Automatik-Ebene; bei reinem Manuell-Fenster NICHT schalten.)
+        if config.get("auto_charge_enabled", False):
+            await self._handle_smart_switches(config)
 
     async def _release_all(self, config):
         """Master-AUS: Wechselrichter freigeben, Laden aus, Smart-Switches aus."""
