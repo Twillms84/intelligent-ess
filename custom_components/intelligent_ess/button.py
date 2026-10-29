@@ -20,7 +20,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         IntelligentESSUpdateButton(coordinator, entry),
         IntelligentESSTrainAIButton(coordinator, entry),
-        IntelligentESSPreviewButton(coordinator, entry),
         IntelligentESSApplyRecommendationButton(coordinator, entry),
         IntelligentESSKIButton(coordinator, entry),
     ])
@@ -63,16 +62,6 @@ class IntelligentESSTrainAIButton(IntelligentESSBaseButton):
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.warning("ProfileManager im Coordinator nicht gefunden. Anlernen fehlgeschlagen.")
-
-class IntelligentESSPreviewButton(IntelligentESSBaseButton):
-    """Zeigt als Vorschau (ohne Nebenwirkungen), was die Automatik tun würde."""
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "Automatik-Vorschau", "mdi:eye-check-outline", "preview_btn", None)
-
-    async def async_press(self) -> None:
-        _LOGGER.info("Automatik-Vorschau angefordert.")
-        await self.coordinator.async_request_refresh()
-        await self.coordinator.async_post_preview()
 
 
 class IntelligentESSApplyRecommendationButton(IntelligentESSBaseButton):

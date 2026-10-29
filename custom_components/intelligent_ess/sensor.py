@@ -12,8 +12,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         IntelligentESSActionSensor(coordinator),
         IntelligentESSConsumptionSensor(coordinator),
-        IntelligentESSEventSensor(coordinator), 
-        
+
         # Nutzt den Key 'rest_demand_daily'
         IntelligentESSGenericSensor(coordinator, "Restbedarf Heute", "rest_demand_daily", "kWh"),
         IntelligentESSGenericSensor(coordinator, "Nachtreserve", "morning_reserve", "kWh"),
@@ -57,14 +56,8 @@ class IntelligentESSActionSensor(IntelligentESSBase):
 
     @property
     def extra_state_attributes(self):
-        gates = self.coordinator.data.get("gates", {}) or {}
         return {
             "grund": self.coordinator.data.get("strat_msg", ""),
-            "smartcharge_erlaubt": gates.get("smartcharge_allowed"),
-            "smarthold_erlaubt": gates.get("smarthold_allowed"),
-            "nacht_defizit_kwh": gates.get("nacht_defizit"),
-            "tages_pv_bilanz_kwh": gates.get("pv_day_balance"),
-            "morgenpreis_hoch": gates.get("morning_price_high"),
         }
 
 class IntelligentESSFahrplanSensor(IntelligentESSBase):
@@ -171,21 +164,6 @@ class IntelligentESSForecastSensorNext(IntelligentESSBase):
     @property
     def native_value(self):
         return self.coordinator.data.get("forecast_next_hour", 0.0)
-
-class IntelligentESSEventSensor(IntelligentESSBase):
-    """Sensor für das Ereignis-Logbook (Diagnose-Kategorie)."""
-    def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self._attr_name = "Intelligent ESS Letztes Ereignis"
-        self._attr_unique_id = f"{coordinator.entry.entry_id}_last_event"
-        self._attr_icon = "mdi:history"
-        # Dies gruppiert den Sensor in der UI unter 'Diagnose'
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def native_value(self):
-        """Gibt das letzte Ereignis aus dem Coordinator zurück."""
-        return self.coordinator.data.get("last_event", "Keine Ereignisse")
 
 class IntelligentESSAutarkyTimeSensor(IntelligentESSBase):
     """Sensor, der die Uhrzeit der voraussichtlichen Autarkie am morgigen Tag anzeigt."""

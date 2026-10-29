@@ -60,7 +60,8 @@ def _select_discharge(horizon, charge, usable_now, usable_cap, charge_per_hour):
 
 
 def plan_dispatch(horizon, usable_now, usable_cap,
-                  charge_advantage_eur=0.0, charge_per_hour=None, allow_charge=True):
+                  charge_advantage_eur=0.0, charge_per_hour=None, allow_charge=True,
+                  min_spread_eur=0.0):
     """Erstellt den Einsatzplan.
 
     horizon: Liste von dicts (Stunde 0 = aktuelle Stunde), je mit:
@@ -70,6 +71,9 @@ def plan_dispatch(horizon, usable_now, usable_cap,
     usable_cap: maximale nutzbare Akku-Energie in kWh (für Ladehub).
     charge_advantage_eur: Mindest-Preisvorteil (€/kWh), damit Netzladen lohnt.
     charge_per_hour: angenommene Netz-Ladeleistung je Stunde (kWh). Default: usable_cap.
+    min_spread_eur: Mindest-Preisabstand (€/kWh) zwischen einer gesparten
+        (günstigen) Stunde und der späteren teuren Stunde, damit das Sparen
+        überhaupt lohnt. Verhindert unnötige Zyklen für Centbeträge.
 
     Rückgabe: dict mit actions[], current_action, discharge/hold/charge-Indizes,
     sowie zusammengefassten Fenstern.
@@ -112,14 +116,20 @@ def plan_dispatch(horizon, usable_now, usable_cap,
                     if target in discharge:
                         break
 
-    # 3. HOLD bestimmen: Bedarfsstunde, die NICHT entladen wird und VOR der
-    #    letzten Entlade-Stunde liegt -> Akku dort sparen.
-    last_discharge = max(discharge) if discharge else -1
+    # 3. HOLD bestimmen: Bedarfsstunde, die NICHT entladen wird und VOR einer
+    #    späteren Entlade-Stunde liegt -> Akku dort sparen. Nur wenn der
+    #    Preisabstand zur teuersten späteren Entlade-Stunde groß genug ist
+    #    (min_spread_eur), sonst lohnt das Sparen nicht.
     hold = set()
     for i, h in enumerate(horizon):
         if i in discharge or i in charge:
             continue
-        if h["net_load"] > EPS and i < last_discharge:
+        if h["net_load"] <= EPS:
+            continue
+        later_prices = [horizon[j]["price"] for j in discharge if j > i]
+        if not later_prices:
+            continue
+        if (max(later_prices) - h["price"]) > min_spread_eur:
             hold.add(i)
 
     # 4. Aktionsliste.

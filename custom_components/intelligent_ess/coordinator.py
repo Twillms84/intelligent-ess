@@ -8,7 +8,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .scheduler import calculate_strategy, evaluate_manual_windows, evaluate_automatic
+from .scheduler import evaluate_manual_windows
 from .planner import plan_dispatch
 # WICHTIG: Hier 'async_get_raw_states' importieren!
 from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
@@ -43,7 +43,6 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self._last_learning_date = None # Merkt sich, wann die KI zuletzt trainiert wurde
         self._update_cycles = 0         # Zähler für das Speichern der Savings
         self._switch_timers = {}        # Einschalt-Zeitpunkte der Smart-Switches
-        self._hold_latch_until = None   # Anti-Flatter-Latch für autonomes SmartHold
 
         self.data = {
             "house_kw": 0.0,
@@ -145,7 +144,6 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             if manual is not None:
                 # Vom Nutzer gesetztes festes Fenster -> hat Vorrang, läuft auch ohne Automatik.
                 strat, msg, lock_needed = manual
-                self._hold_latch_until = None
             elif auto_on:
                 # --- Ebene 2: Automatik aktiv – Entscheidung aus dem Tages-Einsatzplaner ---
                 ca = recommendation.get("current_action", "IDLE")
@@ -159,7 +157,6 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             else:
                 # Automatik AUS und kein manuelles Fenster -> KEINE Eigenaktion.
                 strat, msg, lock_needed = "NORMAL", "Automatik aus – nur Empfehlungen", False
-                self._hold_latch_until = None
 
             self.data.update({
                 "strat": strat,
@@ -194,16 +191,6 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Update fehlgeschlagen: {e}")
 
     # --- FAHRPLAN ---
-    def _hold_window_from_options(self, config):
-        """Liest ein (manuell/KI-gesetztes) aktives Sperrfenster aus den Optionen."""
-        if not config.get("man_hold_s1_enabled", False):
-            return None
-        s = config.get("man_hold_s1_start")
-        e = config.get("man_hold_s1_end")
-        if not s or not e:
-            return None
-        return f"{str(s)[:5]}–{str(e)[:5]}"
-
     def _build_horizon(self, config, now, hours=24):
         """Baut den Prognosehorizont (Preis/PV/Verbrauch je Stunde) für den Planer."""
         prices = self.data.get("prices", []) or []
@@ -271,10 +258,12 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         min_soc = float(config.get("min_soc_reserve", 10.0))
         usable_cap = max(0.1, (100.0 - min_soc) / 100.0 * cap)
         adv = float(config.get("charge_delta_threshold", 5.0)) / 100.0  # ct -> €
+        min_spread = float(config.get("price_delta_threshold", 5.0)) / 100.0  # ct -> €
 
         plan = plan_dispatch(
             horizon, usable_now, usable_cap,
             charge_advantage_eur=adv, charge_per_hour=usable_cap,
+            min_spread_eur=min_spread,
         )
 
         # 24h-Raster der Lade-Stunden (Rückwärtskompatibilität / Anzeige).
@@ -502,70 +491,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 )
         self._switch_timers = {}
 
-    def _apply_autonomous_hold(self, gates, now, strat, msg, lock_needed):
-        """Autonome Entladesperre mit Anti-Flatter-Latch.
-
-        Greift das Gate, wird die Sperre bis zur Morgen-Peak-Stunde "gelatcht",
-        damit sie nicht minütlich an/aus springt, wenn Werte um die Schwelle
-        wackeln. Solange Akku-Energie da ist, bleibt die Sperre bis dahin aktiv.
-        """
-        if gates.get("smarthold_allowed", False):
-            self._hold_latch_until = self._compute_latch_end(now)
-            return (
-                "HOLD",
-                (f"SmartHold: Nachtreserve fehlt ({gates.get('nacht_defizit')} kWh), "
-                 "Morgenpreis hoch – Akku wird bis zum Morgen-Peak gespart."),
-                True,
-            )
-
-        # Gate aktuell zu, aber noch innerhalb des Latch-Fensters und Akku vorhanden?
-        if self._hold_latch_until is not None:
-            battery_left = gates.get("usable_battery", 0) or 0
-            if now < self._hold_latch_until and battery_left > 0.05:
-                until = dt_util.as_local(self._hold_latch_until).strftime("%H:%M")
-                return "HOLD", f"SmartHold gehalten (Anti-Flatter-Schutz bis {until} Uhr)", True
-            self._hold_latch_until = None
-
-        return strat, msg, lock_needed
-
-    def _compute_latch_end(self, now):
-        """Ende des SmartHold-Latch = Morgen-Peak-Stunde (max. 10h ab jetzt)."""
-        summary = self.data.get("ai_price_summary", {}) or {}
-        peak_hour = None
-        mt = summary.get("max_time")
-        if mt:
-            try:
-                peak_hour = int(str(mt).split(":")[0])
-            except (ValueError, IndexError):
-                peak_hour = None
-
-        if peak_hour is None:
-            end = now + timedelta(hours=3)
-        else:
-            end = now.replace(hour=peak_hour, minute=59, second=0, microsecond=0)
-            if end <= now:
-                end = end + timedelta(days=1)
-
-        return min(end, now + timedelta(hours=10))
-
     # --- VORSCHAU (Dry-Run, ohne Nebenwirkungen) ---
-    @staticmethod
-    def _hours_to_windows(hours):
-        """Macht aus [2,3,4,22,23] -> '02:00–05:00, 22:00–00:00'."""
-        if not hours:
-            return ""
-        hours = sorted(hours)
-        parts = []
-        start = prev = hours[0]
-        for h in hours[1:]:
-            if h == prev + 1:
-                prev = h
-            else:
-                parts.append(f"{start:02d}:00–{(prev + 1) % 24:02d}:00")
-                start = prev = h
-        parts.append(f"{start:02d}:00–{(prev + 1) % 24:02d}:00")
-        return ", ".join(parts)
-
     def build_preview_text(self):
         """Erzeugt einen Klartext-Plan dessen, was die Automatik tun würde.
 

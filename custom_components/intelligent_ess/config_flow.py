@@ -59,7 +59,11 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Haupt-Schritt des Options Flows."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # WICHTIG: In bestehende Optionen mergen, statt sie komplett zu
+            # ersetzen. Sonst gingen Hauptschalter, manuelle Zeitfenster und
+            # die Number-Werte (z.B. price_delta_threshold) beim Speichern verloren.
+            merged = {**self.config_entry.options, **user_input}
+            return self.async_create_entry(title="", data=merged)
 
         config = {**self.config_entry.data, **self.config_entry.options}
 
@@ -79,10 +83,10 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required("wr_limit_entity", default=config.get("wr_limit_entity", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
                 
                 # --- PARAMETER ---
-                vol.Required("default_usage", default=config.get("default_usage", 0.85)): vol.Coerce(float),
+                # Hinweis: Standardverbrauch, Min. SOC, Lade-Preisvorteil und
+                # Preis-Abstand sind als Number-Entitäten live regelbar und
+                # daher hier NICHT mehr doppelt aufgeführt.
                 vol.Required("battery_capacity", default=config.get("battery_capacity", 15.0)): vol.Coerce(float),
-                vol.Required("charge_delta_threshold", default=config.get("charge_delta_threshold", 10.0)): vol.Coerce(float),
-                vol.Required("min_soc_reserve", default=config.get("min_soc_reserve", 10.0)): vol.Coerce(float),
                 vol.Required("wr_lock_value", default=config.get("wr_lock_value", 0)): vol.Coerce(int),
                 vol.Required("wr_unlock_value", default=config.get("wr_unlock_value", 80)): vol.Coerce(int),
                 vol.Optional("smart_switches", default=config.get("smart_switches", [])): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch", multiple=True)),

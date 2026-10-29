@@ -53,38 +53,3 @@ def evaluate_manual_windows(options):
         return "HOLD", "Manuelle Entladesperre aktiv", True
 
     return None
-
-
-def evaluate_automatic(ai_profile):
-    """EBENE 2 – automatische KI-Preisoptimierung (nur bei aktivierter Automatik).
-
-    Rückgabe: (strat, msg, lock_needed) oder None.
-    """
-    if not ai_profile:
-        return None
-    current_hour = dt_util.now().hour
-    if current_hour < len(ai_profile) and ai_profile[current_hour] == 1:
-        return "LADEN", "KI-Preisoptimierung empfiehlt Ladung", False
-    return None
-
-
-def calculate_strategy(options, hass_states, ai_profile=None):
-    """Kompatibilitäts-Wrapper: manuelle Fenster zuerst, dann Automatik.
-
-    Hinweis: Der Coordinator schichtet seit v1.0.5 selbst (manuell / automatik /
-    aus). Diese Funktion bleibt für Rückwärtskompatibilität erhalten.
-    """
-    try:
-        manual = evaluate_manual_windows(options)
-        if manual is not None:
-            return manual
-
-        if options.get("auto_charge_enabled", False):
-            auto = evaluate_automatic(ai_profile)
-            if auto is not None:
-                return auto
-
-        return "NORMAL", "Normalbetrieb (PV/Batterie)", False
-    except Exception as e:
-        _LOGGER.error("Schwerer Fehler im Scheduler: %s", e)
-        return "NORMAL", f"Scheduler Fehler: {e}", False

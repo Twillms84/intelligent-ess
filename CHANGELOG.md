@@ -156,3 +156,23 @@ Hinweis: wirkt erst nach HACS-Update auf 1.0.6 + HA-Neustart.
   Stunde) und erklärt ihn verständlich plus Plausibilitätsprüfung. Damit ist er
   mindestens so schlüssig wie die Rechenlogik – kein widersprüchlicher Unsinn
   mehr wie "Akku 9:35 leer, lade um 14:00".
+
+## 1.0.7 – Aufräumen & Options-Bugfix
+
+Bereinigung redundanter/überflüssiger Elemente:
+- **Entfernt:** Sensor „Letztes Ereignis" (wurde nie befüllt), Button
+  „Automatik-Vorschau" (doppelt zum Fahrplan-Sensor), die Anzeige-Flags
+  `smartcharge_erlaubt`/`smarthold_erlaubt` am Action-Sensor (seit dem Planer
+  ohne Funktion). Toter Code im Coordinator/Scheduler entfernt.
+- **Keine Doppel-Bedienung mehr:** Standardverbrauch, Min. SOC und
+  Lade-Preisvorteil sind nur noch als Number-Entitäten live regelbar, nicht
+  mehr zusätzlich im Options-Dialog.
+- **`price_delta_threshold` sinnvoll verdrahtet** (statt gelöscht): dient jetzt
+  als „Min. Preisabstand für Sperre" – der Planer spart den Akku nur, wenn der
+  Preisabstand zur späteren teuren Stunde größer als dieser Wert ist. Verhindert
+  unnötige Zyklen für Centbeträge.
+
+Bugfix:
+- **Options-Dialog überschrieb bisher die gesamte Konfiguration** beim Speichern
+  (`data=user_input`) und löschte dabei Hauptschalter, manuelle Zeitfenster und
+  Number-Werte. Jetzt wird korrekt in die bestehenden Optionen gemergt.
