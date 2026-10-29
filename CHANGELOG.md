@@ -123,3 +123,27 @@ Kontrolle beim Nutzer bleibt:
 Wichtig: Diese Logik wirkt erst, wenn Home Assistant die Integration in 1.0.5
 tatsächlich lädt (HACS-Update auf 1.0.5 + HA-Neustart). Reines Bearbeiten des
 Git-Repos ändert die laufende Instanz nicht.
+
+## 1.0.6 – Intelligenter Tages-Einsatzplaner (statt Einzel-Peak)
+
+Die SmartHold/SmartCharge-Logik war zu simpel: Sie prüfte nur eine einzelne
+Morgen-Preisspitze und sperrte dann stumpf bis dahin – ohne den Verlauf der
+ganzen Preiskurve, den Bedarf je Abschnitt oder die PV-Nachladung.
+
+Neu: ein echter **Tages-Einsatzplaner** (`planner.py`):
+- Plant über den gesamten Prognosehorizont (Preis + PV-Ertrag + Verbrauch je Stunde).
+- Teilt die begrenzte Akku-Energie den **teuersten** Stunden zu, die sie noch
+  decken kann – per Vorwärtssimulation inkl. PV-Nachladung (keine Energie aus
+  der Zukunft für frühere Stunden).
+- **Entladesperre (HOLD)** greift jetzt gezielt nur für die günstigen Stunden
+  VOR einer späteren teuren Stunde, für die die Energie knapp ist – nicht mehr
+  pauschal „21–7 Uhr".
+- **Netzladen (CHARGE)** nur, wenn die teuren Stunden sonst mangels Energie
+  nicht gedeckt sind, und dann in den günstigsten Stunden davor.
+- Skaliert mit dem Ladestand: viel Akku → kaum Eingriff; wenig Akku → gezieltes
+  Sparen/Laden.
+
+Der **Fahrplan** zeigt jetzt den ganzen Tagesplan: „Laden", „Akku sparen",
+„Akku nutzen" als Zeitfenster.
+
+Hinweis: wirkt erst nach HACS-Update auf 1.0.6 + HA-Neustart.

@@ -9,6 +9,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .scheduler import calculate_strategy, evaluate_manual_windows, evaluate_automatic
+from .planner import plan_dispatch
 # WICHTIG: Hier 'async_get_raw_states' importieren!
 from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
@@ -146,14 +147,15 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 strat, msg, lock_needed = manual
                 self._hold_latch_until = None
             elif auto_on:
-                # --- Ebene 2: Automatik aktiv ---
-                strat, msg, lock_needed = "NORMAL", "Normalbetrieb (PV/Batterie)", False
-                auto = evaluate_automatic(recommendation["charge_profile"])
-                if auto is not None:
-                    strat, msg, lock_needed = auto
-                # Autonomes SmartHold nur, wenn sonst NORMAL (Anti-Flatter-Latch).
-                if strat == "NORMAL":
-                    strat, msg, lock_needed = self._apply_autonomous_hold(gates, now, strat, msg, lock_needed)
+                # --- Ebene 2: Automatik aktiv – Entscheidung aus dem Tages-Einsatzplaner ---
+                ca = recommendation.get("current_action", "IDLE")
+                reason = recommendation.get("current_reason", "Normalbetrieb (PV/Batterie)")
+                if ca == "CHARGE":
+                    strat, msg, lock_needed = "LADEN", reason, False
+                elif ca == "HOLD":
+                    strat, msg, lock_needed = "HOLD", reason, True
+                else:  # DISCHARGE oder IDLE -> Akku normal nutzen, keine Sperre
+                    strat, msg, lock_needed = "NORMAL", reason, False
             else:
                 # Automatik AUS und kein manuelles Fenster -> KEINE Eigenaktion.
                 strat, msg, lock_needed = "NORMAL", "Automatik aus – nur Empfehlungen", False
@@ -202,50 +204,104 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             return None
         return f"{str(s)[:5]}–{str(e)[:5]}"
 
+    def _build_horizon(self, config, now, hours=24):
+        """Baut den Prognosehorizont (Preis/PV/Verbrauch je Stunde) für den Planer."""
+        prices = self.data.get("prices", []) or []
+        if not prices:
+            return []
+        solar = self.data.get("solar_hourly", {}) or {}
+        default_usage = float(config.get("default_usage", 0.85))
+
+        # Preise nach lokaler Stunde indizieren (€/kWh).
+        price_map = {}
+        for p in prices:
+            dtp = dt_util.parse_datetime(p.get("start_time")) if p.get("start_time") else None
+            if not dtp:
+                continue
+            key = dt_util.as_local(dtp).replace(minute=0, second=0, microsecond=0)
+            try:
+                price_map[key] = float(p.get("total"))
+            except (TypeError, ValueError):
+                continue
+
+        start = now.replace(minute=0, second=0, microsecond=0)
+        horizon = []
+        for k in range(hours):
+            hdt = start + timedelta(hours=k)
+            price = price_map.get(hdt)
+            if price is None:
+                continue  # ohne Preis keine Planung für diese Stunde
+            load = float(self.profile_manager.get_profile_value(hdt, default_usage))
+            pv = float(solar.get(hdt.strftime("%Y-%m-%d %H:00:00"), 0) or 0)
+            horizon.append({
+                "label": hdt.strftime("%H:%M"),
+                "price": price,
+                "net_load": max(0.0, load - pv),
+                "pv_surplus": max(0.0, pv - load),
+            })
+        return horizon
+
+    @staticmethod
+    def _first_window(horizon, idxs):
+        """Erstes zusammenhängendes Fenster als (start, ende) im Format HH:MM:00."""
+        if not idxs:
+            return (None, None)
+        idxs = sorted(idxs)
+        start = prev = idxs[0]
+        for i in idxs[1:]:
+            if i == prev + 1:
+                prev = i
+            else:
+                break
+        s = horizon[start]["label"] + ":00"
+        if prev + 1 < len(horizon):
+            e = horizon[prev + 1]["label"] + ":00"
+        else:
+            e = f"{(int(horizon[prev]['label'][:2]) + 1) % 24:02d}:00:00"
+        return (s, e)
+
     def _compute_recommendation(self, config, gates, now):
-        """Berechnet die Empfehlung (was die Automatik täte) – ohne jeden Eingriff.
+        """Berechnet die Empfehlung über den Tages-Einsatzplaner – ohne Eingriff.
 
         Dient der Anzeige im Fahrplan und dem Button 'Empfehlung übernehmen'.
         """
-        # Lade-Raster, gegatet durch SmartCharge.
-        profile = self.profile_manager.calculate_best_profile(self.data, config)
-        if not gates.get("smartcharge_allowed"):
-            profile = [0] * 24
+        horizon = self._build_horizon(config, now)
+        usable_now = float(gates.get("usable_battery", 0) or 0)
+        cap = float(config.get("battery_capacity", 15.0))
+        min_soc = float(config.get("min_soc_reserve", 10.0))
+        usable_cap = max(0.1, (100.0 - min_soc) / 100.0 * cap)
+        adv = float(config.get("charge_delta_threshold", 5.0)) / 100.0  # ct -> €
 
-        charge_hours = [h for h, v in enumerate(profile) if v == 1]
-        charge_windows = self._hours_to_windows(charge_hours)
+        plan = plan_dispatch(
+            horizon, usable_now, usable_cap,
+            charge_advantage_eur=adv, charge_per_hour=usable_cap,
+        )
 
-        # Erstes zusammenhängendes Ladefenster für den Übernehmen-Button.
-        charge_start = charge_end = None
-        if charge_hours:
-            start = prev = charge_hours[0]
-            for h in charge_hours[1:]:
-                if h == prev + 1:
-                    prev = h
-                else:
-                    break
-            charge_start = f"{start:02d}:00:00"
-            charge_end = f"{(prev + 1) % 24:02d}:00:00"
+        # 24h-Raster der Lade-Stunden (Rückwärtskompatibilität / Anzeige).
+        charge_profile = [0] * 24
+        for i in plan["charge"]:
+            try:
+                charge_profile[int(horizon[i]["label"][:2])] = 1
+            except (ValueError, IndexError):
+                pass
 
-        # Sperr-Empfehlung: von jetzt bis zur Morgen-Peak-Stunde, wenn SmartHold offen.
-        hold_recommended = bool(gates.get("smarthold_allowed"))
-        hold_start = hold_end = hold_window = None
-        if hold_recommended:
-            latch_end = self._compute_latch_end(now)
-            hs = now.replace(minute=0, second=0, microsecond=0)
-            hold_start = hs.strftime("%H:%M:00")
-            hold_end = dt_util.as_local(latch_end).strftime("%H:%M:00")
-            hold_window = f"{hold_start[:5]}–{hold_end[:5]}"
+        charge_start, charge_end = self._first_window(horizon, plan["charge"])
+        hold_start, hold_end = self._first_window(horizon, plan["hold"])
 
         return {
-            "charge_profile": profile,
-            "charge_windows": charge_windows,
+            "current_action": plan["current_action"],
+            "current_reason": plan["current_reason"],
+            "charge_profile": charge_profile,
+            "charge_windows": plan["windows"]["charge"],
+            "hold_windows": plan["windows"]["hold"],
+            "discharge_windows": plan["windows"]["discharge"],
             "charge_start": charge_start,
             "charge_end": charge_end,
-            "hold_recommended": hold_recommended,
-            "hold_window": hold_window,
+            "hold_recommended": bool(plan["hold"]),
+            "hold_window": plan["windows"]["hold"] or None,
             "hold_start": hold_start,
             "hold_end": hold_end,
+            "plan_actions": plan["actions"],
         }
 
     def apply_recommendation(self):
@@ -290,49 +346,37 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         manual_active = self.data.get("manual_active", False)
         rec = self.data.get("recommendation", {}) or {}
 
-        # Empfehlung (was die Automatik täte) – unabhängig davon, ob sie an ist.
-        rec_charge = rec.get("charge_windows") or ""
-        rec_hold = rec.get("hold_window") or ""
-        empfehlung_parts = []
-        if rec_charge:
-            empfehlung_parts.append(f"Laden {rec_charge}")
-        if rec_hold:
-            empfehlung_parts.append(f"Sperre {rec_hold}")
-        empfehlung = " + ".join(empfehlung_parts) if empfehlung_parts else "kein Eingriff nötig"
+        # Tages-Plan aus dem Einsatzplaner (gilt als Empfehlung, auch bei AUS).
+        w_use = rec.get("discharge_windows") or ""
+        w_hold = rec.get("hold_windows") or ""
+        w_charge = rec.get("charge_windows") or ""
 
-        # Tatsächlich aktives Lade-/Sperrfenster (nur wenn gehandelt wird).
-        charge_windows = self._hours_to_windows(
-            [h for h, v in enumerate(self.data.get("ai_charge_profile", [0] * 24)) if v == 1]
-        ) if (auto_on or manual_active) else ""
-        hold_window = None
-        if self._hold_latch_until is not None:
-            hold_window = f"bis {dt_util.as_local(self._hold_latch_until).strftime('%H:%M')}"
-        else:
-            hold_window = self._hold_window_from_options(config)
+        emp_parts = []
+        if w_charge:
+            emp_parts.append(f"Laden {w_charge}")
+        if w_hold:
+            emp_parts.append(f"Akku sparen {w_hold}")
+        if w_use:
+            emp_parts.append(f"Akku nutzen {w_use}")
+        empfehlung = " · ".join(emp_parts) if emp_parts else "kein Eingriff nötig"
 
-        # Naechste/aktuelle Aktion in Worten.
+        # Aktuelle/nächste Aktion in Worten.
         if strat == "LADEN":
             src = "manuelles Fenster" if manual_active else "Automatik"
-            next_action = f"Lädt gerade aus dem Netz ({src})"
+            next_action = f"Lädt aus dem Netz ({src})"
         elif strat == "HOLD":
             src = "manuelles Fenster" if manual_active else "Automatik"
-            next_action = f"Entladesperre aktiv ({hold_window}, {src})" if hold_window else f"Entladesperre aktiv ({src})"
+            next_action = f"Entladesperre aktiv – Akku wird gespart ({src})"
         elif not auto_on:
-            # Keine Eigenaktion – aber Empfehlung anzeigen.
             next_action = f"Automatik AUS – Empfehlung: {empfehlung}"
-        elif charge_windows:
-            next_action = f"Netzladung geplant: {charge_windows}"
-        elif gates.get("smarthold_allowed"):
-            next_action = "Entladesperre vorgesehen (Morgen-Peak)"
         else:
-            next_action = "Normalbetrieb (PV/Batterie), kein Eingriff geplant"
+            next_action = rec.get("current_reason", "Normalbetrieb (PV/Batterie)")
 
         figures = {
             "akku_nutzbar_kwh": gates.get("usable_battery"),
             "pv_rest_heute_kwh": self.data.get("solar_remaining"),
             "pv_morgen_kwh": self.data.get("pv_tomorrow_total"),
             "nacht_bedarf_kwh": self.data.get("night_demand"),
-            "nacht_defizit_kwh": gates.get("nacht_defizit"),
             "preis_tief_ct": summary.get("min_price"),
             "preis_tief_zeit": summary.get("min_time"),
             "preis_hoch_ct": summary.get("max_price"),
@@ -345,10 +389,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "grund": reason,
             "naechste_aktion": next_action,
             "empfehlung": empfehlung,
-            "ladefenster": charge_windows or "—",
-            "sperrfenster": hold_window or "—",
-            "smartcharge_erlaubt": gates.get("smartcharge_allowed"),
-            "smarthold_erlaubt": gates.get("smarthold_allowed"),
+            "fenster_akku_nutzen": w_use or "—",
+            "fenster_akku_sparen": w_hold or "—",
+            "fenster_laden": w_charge or "—",
             "kennzahlen": figures,
         }
 
@@ -357,21 +400,18 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self.data["fahrplan"] = short[:255]
         self.data["plan"] = plan
 
-        # Mehrzeiliger Klartext.
+        # Mehrzeiliger Klartext (Tagesplan).
         lines = [
             f"Modus: {'AN' if auto_on else 'AUS'}  |  Aktion: {strat}",
             f"➡️ {next_action}",
         ]
-        if reason:
-            lines.append(f"Grund: {reason}")
-        lines.append(f"💡 Empfehlung: {empfehlung}")
-        lines.append(
-            f"⚡ Ladefenster: {charge_windows or '—'}   🔒 Sperrfenster: {hold_window or '—'}"
-        )
+        lines.append(f"⚡ Laden: {w_charge or '—'}")
+        lines.append(f"🔒 Akku sparen: {w_hold or '—'}")
+        lines.append(f"🔋 Akku nutzen: {w_use or '—'}")
         lines.append(
             f"🔋 Akku nutzbar {figures['akku_nutzbar_kwh']} kWh  |  "
             f"☀️ PV-Rest {figures['pv_rest_heute_kwh']} kWh  |  "
-            f"Nacht-Defizit {figures['nacht_defizit_kwh']} kWh"
+            f"Nachtbedarf {figures['nacht_bedarf_kwh']} kWh"
         )
         lines.append(
             f"📈 Tief {figures['preis_tief_ct']}ct ({figures['preis_tief_zeit']})  |  "
