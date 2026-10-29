@@ -147,3 +147,12 @@ Der **Fahrplan** zeigt jetzt den ganzen Tagesplan: „Laden", „Akku sparen",
 „Akku nutzen" als Zeitfenster.
 
 Hinweis: wirkt erst nach HACS-Update auf 1.0.6 + HA-Neustart.
+
+### Vorschau & KI-Check nutzen jetzt denselben Plan
+- Die **Automatik-Vorschau** zeigt den Tagesplan des Einsatzplaners (Laden /
+  Akku sparen / Akku nutzen) statt der alten Einzel-Peak-Gates.
+- Der **KI Strategie-Check** erfindet keine eigenen Uhrzeiten mehr. Er bekommt
+  den fertigen, optimierten Tagesplan samt Stundentabelle (Preis/PV/Bedarf je
+  Stunde) und erklärt ihn verständlich plus Plausibilitätsprüfung. Damit ist er
+  mindestens so schlüssig wie die Rechenlogik – kein widersprüchlicher Unsinn
+  mehr wie "Akku 9:35 leer, lade um 14:00".

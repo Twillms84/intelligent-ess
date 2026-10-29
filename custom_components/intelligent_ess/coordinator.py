@@ -575,51 +575,24 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         config = {**self.entry.data, **self.entry.options}
         gates = data.get("gates", {}) or {}
         summary = data.get("ai_price_summary", {}) or {}
+        rec = data.get("recommendation", {}) or {}
         auto_on = bool(config.get("auto_charge_enabled", False))
-
-        # Lade-Fahrplan als Vorschau berechnen (unabhängig vom Hauptschalter).
-        preview_cfg = dict(config)
-        preview_cfg["auto_charge_enabled"] = True
-        profile = self.profile_manager.calculate_best_profile(data, preview_cfg)
-        if not gates.get("smartcharge_allowed"):
-            profile = [0] * 24
-        charge_windows = self._hours_to_windows([h for h, v in enumerate(profile) if v == 1])
 
         head = "AN" if auto_on else "AUS (Vorschau – so würde die Automatik bei Aktivierung handeln)"
         lines = [
             f"Automatik: {head}",
             "",
             f"🔋 Akku nutzbar: {gates.get('usable_battery', '?')} kWh  |  ☀️ PV-Rest heute: {data.get('solar_remaining', '?')} kWh",
-            f"🏠 Bedarf bis Autarkiestart: {data.get('night_demand', '?')} kWh",
+            f"🏠 Nachtbedarf bis Autarkiestart: {data.get('night_demand', '?')} kWh",
             f"📈 Preis: Tief {summary.get('min_price', '?')}ct ({summary.get('min_time', '?')}) | "
             f"Hoch {summary.get('max_price', '?')}ct ({summary.get('max_time', '?')})",
             "",
-        ]
-
-        # SmartCharge
-        if gates.get("smartcharge_allowed"):
-            if charge_windows:
-                lines.append(f"⚡ SmartCharge: AKTIV – geplantes Laden: {charge_windows}")
-            else:
-                lines.append("⚡ SmartCharge: offen, aber aktuell kein günstiges Fenster mit Restbedarf.")
-        else:
-            lines.append(
-                f"⚡ SmartCharge: AUS – genug PV erwartet (Tages-PV-Bilanz {gates.get('pv_day_balance', '?')} kWh)."
-            )
-
-        # SmartHold
-        if gates.get("smarthold_allowed"):
-            lines.append(
-                f"🔒 SmartHold: AKTIV – Entladesperre, Akku wird für den teuren Morgen gespart "
-                f"(Defizit {gates.get('nacht_defizit', '?')} kWh)."
-            )
-        else:
-            grund = "Nachtreserve reicht" if not gates.get("reserve_insufficient") else "Morgenpreis nicht hoch genug"
-            lines.append(f"🔒 SmartHold: AUS – {grund}.")
-
-        lines += [
+            "Tagesplan (Einsatzplaner):",
+            f"⚡ Laden: {rec.get('charge_windows') or '—'}",
+            f"🔒 Akku sparen: {rec.get('hold_windows') or '—'}",
+            f"🔋 Akku nutzen: {rec.get('discharge_windows') or '—'}",
             "",
-            f"➡️ Aktueller Zustand: {data.get('strat', '?')} – {data.get('strat_msg', '')}",
+            f"➡️ Jetzt: {rec.get('current_reason', data.get('strat_msg', ''))}",
             "",
             "ℹ️ Vorschau – es wurde nichts verändert.",
         ]
