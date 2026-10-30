@@ -7,7 +7,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSNumber(entry, "default_usage", "Standardverbrauch", 0.1, 5.0, 0.05, "kW", EntityCategory.CONFIG),
         IntelligentESSNumber(entry, "min_soc_reserve", "Min. SOC (Nacht-Reserve)", 5.0, 50.0, 1.0, "%", EntityCategory.CONFIG),
         IntelligentESSNumber(entry, "price_delta_threshold", "Min. Preisabstand für Sperre", 0.0, 20.0, 0.5, "ct", EntityCategory.CONFIG),
-        IntelligentESSNumber(entry, "charge_delta_threshold", "Lade-Preisvorteil", 0.0, 15.0, 0.5, "ct", EntityCategory.CONFIG)
+        IntelligentESSNumber(entry, "charge_delta_threshold", "Lade-Preisvorteil", 0.0, 15.0, 0.5, "ct", EntityCategory.CONFIG),
+        # Max. Netz-Ladeleistung: kW = kWh, die in einer Stunde in den Akku fließen können.
+        IntelligentESSNumber(entry, "max_charge_power", "Max. Ladeleistung (Netz)", 0.5, 20.0, 0.5, "kW", EntityCategory.CONFIG)
     ])
 
 class IntelligentESSNumber(NumberEntity):

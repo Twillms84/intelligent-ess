@@ -259,10 +259,14 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         usable_cap = max(0.1, (100.0 - min_soc) / 100.0 * cap)
         adv = float(config.get("charge_delta_threshold", 5.0)) / 100.0  # ct -> €
         min_spread = float(config.get("price_delta_threshold", 5.0)) / 100.0  # ct -> €
+        # Max. Netz-Ladeleistung (kW = kWh/h). Begrenzt, wie viel in einer Stunde
+        # tatsächlich in den Akku fließen kann (Default 3 kW, falls nicht gesetzt).
+        charge_per_hour = float(config.get("max_charge_power", 3.0) or 3.0)
+        charge_per_hour = min(charge_per_hour, usable_cap)
 
         plan = plan_dispatch(
             horizon, usable_now, usable_cap,
-            charge_advantage_eur=adv, charge_per_hour=usable_cap,
+            charge_advantage_eur=adv, charge_per_hour=charge_per_hour,
             min_spread_eur=min_spread,
         )
 

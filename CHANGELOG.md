@@ -176,3 +176,21 @@ Bugfix:
 - **Options-Dialog überschrieb bisher die gesamte Konfiguration** beim Speichern
   (`data=user_input`) und löschte dabei Hauptschalter, manuelle Zeitfenster und
   Number-Werte. Jetzt wird korrekt in die bestehenden Optionen gemergt.
+
+## 1.0.8 – Versions-/Release-Korrektur
+
+- manifest-Version an den Release-Tag angeglichen (HACS liest die Version aus
+  der manifest.json, nicht aus dem Tag-Namen). Kein Code-Change.
+
+## 1.0.9 – Realistische Ladeleistung
+
+- Neue Einstellung **„Max. Ladeleistung (Netz)"** (kW = kWh pro Stunde). Der
+  Planer weiß dadurch, wie viel in einer Stunde tatsächlich in den Akku fließen
+  kann, statt anzunehmen, der Akku sei in einer Stunde voll.
+- **Mehrstündiges Laden:** Der Planer belegt jetzt so viele günstige Stunden
+  zum Netzladen, wie nötig sind, um die teuren Bedarfsstunden zu decken –
+  begrenzt durch die Ladeleistung und die Akku-Kapazität. Vorher wurde oft nur
+  eine einzige Stunde geplant, die in der Praxis nicht ausreicht.
+
+Beispiel: Bei 0,8 kW Ladeleistung plant der Planer 4 Ladestunden, bei 3 kW
+reicht ihm eine – je nach benötigter Energiemenge.

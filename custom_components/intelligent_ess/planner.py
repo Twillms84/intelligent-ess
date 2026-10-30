@@ -93,28 +93,36 @@ def plan_dispatch(horizon, usable_now, usable_cap,
     charge = set()
     discharge = _select_discharge(horizon, charge, usable_now, usable_cap, charge_per_hour)
 
-    # 2. Netzladen nur, wenn teure Bedarfsstunden mangels Energie NICHT gedeckt sind.
+    # 2. Netzladen: so viele günstige Stunden nachladen, wie nötig, um die teuren
+    #    Bedarfsstunden zu decken – begrenzt durch die Ladeleistung (charge_per_hour)
+    #    und die Kapazität. Pro Durchgang wird eine günstige Stunde ergänzt, solange
+    #    das die Abdeckung teurer Stunden verbessert.
     if allow_charge:
-        need_idx = [i for i, h in enumerate(horizon) if h["net_load"] > EPS]
-        uncovered = [i for i in need_idx if i not in discharge]
-        if uncovered:
-            # Teuerste nicht gedeckte Stunde als Ziel.
+        improved = True
+        while improved:
+            improved = False
+            need_idx = [i for i, h in enumerate(horizon) if h["net_load"] > EPS]
+            uncovered = [i for i in need_idx if i not in discharge and i not in charge]
+            if not uncovered:
+                break
+            # Teuerste noch nicht gedeckte Bedarfsstunde als Ziel.
             target = max(uncovered, key=lambda i: horizon[i]["price"])
             target_price = horizon[target]["price"]
-            # Günstige Stunden VOR dem Ziel, die den Preisvorteil erfüllen.
+            # Günstigste freie Stunde VOR dem Ziel mit ausreichendem Preisvorteil.
             candidates = sorted(
-                [i for i in range(target) if horizon[i]["price"] + charge_advantage_eur < target_price],
+                [i for i in range(target)
+                 if i not in charge and i not in discharge
+                 and horizon[i]["price"] + charge_advantage_eur < target_price],
                 key=lambda i: horizon[i]["price"],
             )
             for c in candidates:
                 trial_charge = charge | {c}
-                # Mit zusätzlicher Ladung neu auswählen und prüfen, ob mehr gedeckt wird.
                 new_discharge = _select_discharge(horizon, trial_charge, usable_now, usable_cap, charge_per_hour)
                 if len(new_discharge) > len(discharge):
                     charge = trial_charge
                     discharge = new_discharge
-                    if target in discharge:
-                        break
+                    improved = True
+                    break  # neu bewerten, ob noch Bedarfsstunden offen sind
 
     # 3. HOLD bestimmen: Bedarfsstunde, die NICHT entladen wird und VOR einer
     #    späteren Entlade-Stunde liegt -> Akku dort sparen. Nur wenn der
