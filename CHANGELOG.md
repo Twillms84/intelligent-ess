@@ -194,3 +194,10 @@ Bugfix:
 
 Beispiel: Bei 0,8 kW Ladeleistung plant der Planer 4 Ladestunden, bei 3 kW
 reicht ihm eine – je nach benötigter Energiemenge.
+
+## 1.0.10 – Automatik-Vorschau-Button zurück
+
+- Der Button **„Automatik-Vorschau"** ist wieder da (auf Wunsch). Er zeigt den
+  aktuellen Tagesplan des Einsatzplaners als Benachrichtigung – inklusive der
+  realistischen, von der Ladeleistung abhängigen Ladefenster. Dieselben Infos
+  stehen weiterhin dauerhaft am Fahrplan-Sensor.
