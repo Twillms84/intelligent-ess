@@ -201,3 +201,12 @@ reicht ihm eine – je nach benötigter Energiemenge.
   aktuellen Tagesplan des Einsatzplaners als Benachrichtigung – inklusive der
   realistischen, von der Ladeleistung abhängigen Ladefenster. Dieselben Infos
   stehen weiterhin dauerhaft am Fahrplan-Sensor.
+
+## 1.0.11 – Ersparnis zurücksetzen
+
+- Neuer Button **„Ersparnis zurücksetzen"**: setzt alle Spar-Töpfe
+  (Solar/Hold/Load/Gesamt) auf 0 und speichert das sofort.
+
+Hinweis: Die Berechnung der Load-Ersparnis ist weiterhin fehlerhaft und lässt
+den Wert über die Zeit unrealistisch ansteigen. Der Reset schafft einen sauberen
+Startpunkt, behebt aber noch nicht die Ursache.

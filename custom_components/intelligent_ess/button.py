@@ -22,6 +22,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntelligentESSTrainAIButton(coordinator, entry),
         IntelligentESSPreviewButton(coordinator, entry),
         IntelligentESSApplyRecommendationButton(coordinator, entry),
+        IntelligentESSResetSavingsButton(coordinator, entry),
         IntelligentESSKIButton(coordinator, entry),
     ])
     return True
@@ -63,6 +64,24 @@ class IntelligentESSTrainAIButton(IntelligentESSBaseButton):
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.warning("ProfileManager im Coordinator nicht gefunden. Anlernen fehlgeschlagen.")
+
+
+class IntelligentESSResetSavingsButton(IntelligentESSBaseButton):
+    """Setzt die Ersparnis-Zähler (Solar/Hold/Load/Gesamt) auf 0."""
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "Ersparnis zurücksetzen", "mdi:restore", "reset_savings_btn", EntityCategory.CONFIG)
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Ersparnis-Reset angefordert.")
+        await self.coordinator.reset_savings()
+        await self.hass.services.async_call(
+            "persistent_notification", "create",
+            {
+                "title": "Intelligent ESS",
+                "message": "Die Ersparnis-Zähler wurden auf 0 zurückgesetzt.",
+                "notification_id": "ess_reset_savings",
+            },
+        )
 
 
 class IntelligentESSPreviewButton(IntelligentESSBaseButton):

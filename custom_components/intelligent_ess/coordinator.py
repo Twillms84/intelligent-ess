@@ -610,5 +610,12 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         try:
             with open(self.savings_path, 'w') as f:
                 json.dump(self.data["savings"], f)
-        except Exception: 
+        except Exception:
             pass
+
+    async def reset_savings(self):
+        """Setzt alle Spar-Töpfe (Solar/Hold/Load/Gesamt) auf 0 und speichert."""
+        self.data["savings"] = {"total": 0.0, "solar": 0.0, "hold": 0.0, "load": 0.0}
+        await self.hass.async_add_executor_job(self._save_savings_to_disk)
+        await self.async_request_refresh()
+        _LOGGER.info("Ersparnis-Zähler auf 0 zurückgesetzt.")
