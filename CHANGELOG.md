@@ -221,3 +221,15 @@ Startpunkt, behebt aber noch nicht die Ursache.
     Ladestrom 40 A und 0 A).
 - Der Lade-Switch ist damit nicht mehr Pflicht. Bestehende Konfigurationen mit
   Switch laufen unverändert weiter.
+
+## 1.0.13 – Energie-Projektion bis Tagesende
+
+- Der Planer simuliert jetzt den **Akkuverlauf entlang des Plans** und macht die
+  Tagesbilanz sichtbar: **Tiefststand** (wann/wie viel), **„voraussichtlich leer
+  um HH:MM"** und **Restladung am Tagesende**.
+- Neue **Rest-des-Tages-Bilanz**: nutzbarer Akku + Rest-PV heute − Rest-Bedarf
+  heute = Überschuss/Defizit in kWh.
+- Alles im Fahrplan sichtbar (Text + Attribute `prognose`, `akku_leer_um`,
+  `akku_tagesende_kwh`, `rest_bilanz_kwh`). Da der Plan ohnehin jede
+  Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
+  Prognose laufend an die Realität an.

@@ -281,6 +281,17 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         charge_start, charge_end = self._first_window(horizon, plan["charge"])
         hold_start, hold_end = self._first_window(horizon, plan["hold"])
 
+        # Rest-des-Tages-Bilanz: nutzbarer Akku + Rest-PV heute − Rest-Bedarf heute.
+        pv_rest = float(self.data.get("solar_remaining", 0.0) or 0.0)
+        demand_rest = 0.0
+        for h in range(now.hour, 24):
+            target = now.replace(hour=h, minute=0, second=0, microsecond=0)
+            demand_rest += float(self.profile_manager.get_profile_value(
+                target, float(config.get("default_usage", 0.85))))
+        balance_rest = round(usable_now + pv_rest - demand_rest, 2)
+
+        proj = plan.get("projection", {}) or {}
+
         return {
             "current_action": plan["current_action"],
             "current_reason": plan["current_reason"],
@@ -295,6 +306,14 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "hold_start": hold_start,
             "hold_end": hold_end,
             "plan_actions": plan["actions"],
+            # Energie-Projektion (Tagesbilanz)
+            "proj_min_kwh": proj.get("min_kwh"),
+            "proj_min_at": proj.get("min_at"),
+            "proj_empty_at": proj.get("empty_at"),
+            "proj_end_kwh": proj.get("end_kwh"),
+            "rest_pv_kwh": round(pv_rest, 2),
+            "rest_demand_kwh": round(demand_rest, 2),
+            "rest_balance_kwh": balance_rest,
         }
 
     def apply_recommendation(self):
@@ -376,6 +395,16 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "preis_hoch_zeit": summary.get("max_time"),
         }
 
+        # Energie-Projektion (Tagesbilanz) aus der Empfehlung.
+        empty_at = rec.get("proj_empty_at")
+        if empty_at:
+            prognose = f"Akku voraussichtlich leer um {empty_at} Uhr"
+        else:
+            prognose = f"Akku reicht durch – Tiefststand {rec.get('proj_min_kwh', '?')} kWh"
+            if rec.get("proj_min_at"):
+                prognose += f" (um {rec['proj_min_at']} Uhr)"
+        balance = rec.get("rest_balance_kwh")
+
         plan = {
             "modus": "AN" if auto_on else "AUS",
             "aktion": strat,
@@ -385,6 +414,10 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "fenster_akku_nutzen": w_use or "—",
             "fenster_akku_sparen": w_hold or "—",
             "fenster_laden": w_charge or "—",
+            "prognose": prognose,
+            "rest_bilanz_kwh": balance,
+            "akku_leer_um": empty_at,
+            "akku_tagesende_kwh": rec.get("proj_end_kwh"),
             "kennzahlen": figures,
         }
 
@@ -401,6 +434,12 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         lines.append(f"⚡ Laden: {w_charge or '—'}")
         lines.append(f"🔒 Akku sparen: {w_hold or '—'}")
         lines.append(f"🔋 Akku nutzen: {w_use or '—'}")
+        lines.append(f"🔮 Prognose: {prognose}")
+        lines.append(
+            f"⚖️ Rest-Tagesbilanz: {balance if balance is not None else '?'} kWh "
+            f"(Rest-PV {rec.get('rest_pv_kwh', '?')} − Rest-Bedarf {rec.get('rest_demand_kwh', '?')}), "
+            f"Akku Tagesende {rec.get('proj_end_kwh', '?')} kWh"
+        )
         lines.append(
             f"🔋 Akku nutzbar {figures['akku_nutzbar_kwh']} kWh  |  "
             f"☀️ PV-Rest {figures['pv_rest_heute_kwh']} kWh  |  "

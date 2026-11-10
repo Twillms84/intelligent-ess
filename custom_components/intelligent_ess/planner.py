@@ -84,6 +84,8 @@ def plan_dispatch(horizon, usable_now, usable_cap,
             "actions": [], "current_action": "IDLE", "current_reason": "Keine Prognosedaten",
             "discharge": [], "hold": [], "charge": [],
             "windows": {"discharge": "", "hold": "", "charge": ""},
+            "projection": {"trace": [], "min_kwh": round(usable_now, 2), "min_at": None,
+                           "empty_at": None, "end_kwh": round(usable_now, 2)},
         }
 
     if charge_per_hour is None:
@@ -160,6 +162,10 @@ def plan_dispatch(horizon, usable_now, usable_cap,
         "IDLE": "Normalbetrieb (PV/Batterie)",
     }
 
+    # 5. Energie-Projektion: Akkuverlauf entlang des Plans simulieren.
+    #    So ist sichtbar, wie viel bis Tagesende bleibt und ob/wann er leer wird.
+    projection = _project_soc(horizon, actions, usable_now, usable_cap, charge_per_hour)
+
     return {
         "actions": actions,
         "current_action": current_action,
@@ -172,6 +178,43 @@ def plan_dispatch(horizon, usable_now, usable_cap,
             "hold": _windows(horizon, hold),
             "charge": _windows(horizon, charge),
         },
+        "projection": projection,
+    }
+
+
+def _project_soc(horizon, actions, usable_now, usable_cap, charge_per_hour):
+    """Simuliert den Akkuverlauf (kWh) entlang des Plans.
+
+    Rückgabe: min_kwh (+ Uhrzeit), empty_at (erste Stunde ~0), end_kwh,
+    und der stündliche Verlauf.
+    """
+    soc = usable_now
+    trace = []
+    min_kwh = usable_now
+    min_at = None
+    empty_at = None
+    for i, h in enumerate(horizon):
+        soc = min(usable_cap, soc + h["pv_surplus"])
+        act = actions[i]
+        if act == "CHARGE":
+            soc = min(usable_cap, soc + charge_per_hour)
+        elif act == "HOLD":
+            pass  # Netz versorgt das Haus, Akku unverändert
+        else:  # DISCHARGE oder IDLE: Akku deckt den Restbedarf
+            soc = max(0.0, soc - h["net_load"])
+        soc = round(soc, 2)
+        trace.append({"label": h["label"], "soc_kwh": soc})
+        if soc < min_kwh:
+            min_kwh = soc
+            min_at = h["label"]
+        if empty_at is None and soc <= EPS:
+            empty_at = h["label"]
+    return {
+        "trace": trace,
+        "min_kwh": round(min_kwh, 2),
+        "min_at": min_at,
+        "empty_at": empty_at,
+        "end_kwh": trace[-1]["soc_kwh"] if trace else round(usable_now, 2),
     }
 
 

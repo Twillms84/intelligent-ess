@@ -85,6 +85,10 @@ class IntelligentESSFahrplanSensor(IntelligentESSBase):
             "fenster_laden": plan.get("fenster_laden"),
             "fenster_akku_sparen": plan.get("fenster_akku_sparen"),
             "fenster_akku_nutzen": plan.get("fenster_akku_nutzen"),
+            "prognose": plan.get("prognose"),
+            "akku_leer_um": plan.get("akku_leer_um"),
+            "akku_tagesende_kwh": plan.get("akku_tagesende_kwh"),
+            "rest_bilanz_kwh": plan.get("rest_bilanz_kwh"),
         }
         # Kennzahlen flach dazu, damit sie einzeln als Attribut nutzbar sind.
         for k, v in (plan.get("kennzahlen") or {}).items():
