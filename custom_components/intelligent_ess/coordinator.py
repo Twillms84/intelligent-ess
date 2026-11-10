@@ -461,18 +461,45 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             target_limit = lock_value if lock_needed else unlock_value
             await self._set_wr_limit(limit_entity, target_limit, "Sperre" if lock_needed else strat)
 
-        # 2. Spezifische Lade-Steuerung (Falls aktiv)
-        charge_control_entity = config.get("battery_charge_switch")
-        if charge_control_entity:
-            action = "turn_on" if strat == "LADEN" else "turn_off"
-            await self.hass.services.async_call(
-                "switch", action, {"entity_id": charge_control_entity}
-            )
+        # 2. Spezifische Lade-Steuerung (Switch und/oder Number)
+        await self._apply_charge_control(config, strat == "LADEN")
 
         # 3. Smart-Switches: Ueberschuss-Verbraucher nur bei aktiver Automatik.
         #    (Gehört zur Automatik-Ebene; bei reinem Manuell-Fenster NICHT schalten.)
         if config.get("auto_charge_enabled", False):
             await self._handle_smart_switches(config)
+
+    async def _apply_charge_control(self, config, on):
+        """Steuert das Netzladen – wahlweise über eine Switch- und/oder Number-Entität.
+
+        Beide sind optional; es wird bedient, was konfiguriert ist:
+        - battery_charge_switch: wird ein-/ausgeschaltet.
+        - battery_charge_number: wird auf den An- bzw. Aus-Wert gesetzt
+          (battery_charge_number_on / battery_charge_number_off, z.B. Ladestrom in A und 0).
+        """
+        # Variante A: Switch
+        switch_entity = config.get("battery_charge_switch")
+        if switch_entity:
+            action = "turn_on" if on else "turn_off"
+            try:
+                await self.hass.services.async_call(
+                    "switch", action, {"entity_id": switch_entity}
+                )
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.warning("Lade-Switch %s konnte nicht geschaltet werden: %s", switch_entity, ex)
+
+        # Variante B: Number (z.B. Ladestrom/-leistung setzen)
+        number_entity = config.get("battery_charge_number")
+        if number_entity:
+            on_value = float(config.get("battery_charge_number_on", 0.0) or 0.0)
+            off_value = float(config.get("battery_charge_number_off", 0.0) or 0.0)
+            target = on_value if on else off_value
+            try:
+                await self.hass.services.async_call(
+                    "number", "set_value", {"entity_id": number_entity, "value": target}
+                )
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.warning("Lade-Number %s konnte nicht gesetzt werden: %s", number_entity, ex)
 
     async def _release_all(self, config):
         """Master-AUS: Wechselrichter freigeben, Laden aus, Smart-Switches aus."""
@@ -481,11 +508,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             unlock_value = float(config.get("wr_unlock_value", 80.0))
             await self._set_wr_limit(limit_entity, unlock_value, "Automatik AUS – Freigabe")
 
-        charge_control_entity = config.get("battery_charge_switch")
-        if charge_control_entity:
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": charge_control_entity}
-            )
+        await self._apply_charge_control(config, False)
 
         # Von uns zugeschaltete Überschuss-Verbraucher wieder abschalten.
         for s in (config.get("smart_switches") or []):

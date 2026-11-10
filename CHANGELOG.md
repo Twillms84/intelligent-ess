@@ -210,3 +210,14 @@ reicht ihm eine – je nach benötigter Energiemenge.
 Hinweis: Die Berechnung der Load-Ersparnis ist weiterhin fehlerhaft und lässt
 den Wert über die Zeit unrealistisch ansteigen. Der Reset schafft einen sauberen
 Startpunkt, behebt aber noch nicht die Ursache.
+
+## 1.0.12 – Netzladen per Switch oder Number
+
+- Die Lade-Steuerung ist jetzt flexibel: Du kannst für das Netzladen wahlweise
+  eine **Switch-Entität**, eine **Number-Entität** oder **beides** hinterlegen.
+  - `battery_charge_switch` (optional): wird ein-/ausgeschaltet.
+  - `battery_charge_number` (optional): wird beim Laden auf den An-Wert gesetzt,
+    sonst auf den Aus-Wert (`battery_charge_number_on` / `..._off`, z. B.
+    Ladestrom 40 A und 0 A).
+- Der Lade-Switch ist damit nicht mehr Pflicht. Bestehende Konfigurationen mit
+  Switch laufen unverändert weiter.
