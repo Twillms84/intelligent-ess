@@ -9,8 +9,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ESSConfigSwitch(entry, "man_charge_s2_enabled", "Laden Slot 2", "mdi:battery-plus"),
         ESSConfigSwitch(entry, "man_hold_s1_enabled", "Entladesperre", "mdi:battery-lock"),
         
-        # Konfiguration (Wird im HA-Dashboard unter Diagnose/Konfig gruppiert)
-        ESSConfigSwitch(entry, "auto_charge_enabled", "Ladeautomatik aktiv", "mdi:robot", EntityCategory.CONFIG),
+        # Hauptschalter der Automatik – bewusst OHNE Config-Kategorie, damit er bei
+        # den Bedienelementen (Steuerung) erscheint und nicht in der Diagnose
+        # versteckt ist. Das ist der Master: AUS = keine Eigenaktion mehr.
+        ESSConfigSwitch(entry, "auto_charge_enabled", "Ladeautomatik aktiv", "mdi:robot"),
     ])
 
 class ESSConfigSwitch(SwitchEntity):

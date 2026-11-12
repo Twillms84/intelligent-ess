@@ -43,6 +43,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         self._last_learning_date = None # Merkt sich, wann die KI zuletzt trainiert wurde
         self._update_cycles = 0         # Zähler für das Speichern der Savings
         self._switch_timers = {}        # Einschalt-Zeitpunkte der Smart-Switches
+        self._was_controlling = False   # Hat die Integration zuletzt die Hardware gesteuert?
 
         self.data = {
             "house_kw": 0.0,
@@ -168,11 +169,19 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
 
             # 7. HARDWARE-STEUERUNG
             # Nur eingreifen, wenn ein manuelles Fenster aktiv ist ODER die Automatik an ist.
-            # Sonst: Hardware in den Normalzustand freigeben (echtes "AUS heißt AUS").
             if manual is not None or auto_on:
                 await self._handle_hardware_control(config, lock_needed, strat)
+                self._was_controlling = True
             else:
-                await self._release_all(config)
+                # Echtes "AUS heißt AUS" (Totstellen):
+                # Nur beim ÜBERGANG von Steuerung -> AUS einmalig sauber freigeben
+                # (WR entsperren, Laden aus, Smart-Switches aus), damit der
+                # Wechselrichter nie gesperrt oder ladend hängenbleibt. Danach KEIN
+                # Schreibzugriff mehr – der Nutzer kann den WR völlig frei von Hand
+                # bedienen, ohne dass die Integration minütlich dagegenschreibt.
+                if self._was_controlling:
+                    await self._release_all(config)
+                    self._was_controlling = False
 
             # 7b. FAHRPLAN zusammenstellen (detailliert, fuers Dashboard)
             self._compose_fahrplan(config, gates, auto_on, now)

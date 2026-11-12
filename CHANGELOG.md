@@ -234,6 +234,21 @@ Startpunkt, behebt aber noch nicht die Ursache.
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
 
+## 1.0.15 – Echtes „AUS" + Hauptschalter sichtbar
+
+- **„AUS heißt AUS" jetzt wörtlich (Totstellen):** Ist die Automatik aus UND
+  kein manuelles Zeitfenster aktiv, schreibt die Integration nicht mehr jede
+  Minute auf die Hardware. Beim Umschalten auf AUS wird **einmalig** sauber
+  freigegeben (Wechselrichter entsperrt, Laden aus, Smart-Switches aus) – damit
+  nichts gesperrt oder ladend hängenbleibt – danach **kein Schreibzugriff
+  mehr**. Der Wechselrichter lässt sich im AUS-Zustand völlig frei von Hand
+  bedienen; die Integration schreibt nicht mehr dagegen. Vorher wurde das
+  WR-Limit im AUS-Zustand minütlich auf den Freigabe-Wert zurückgesetzt – das
+  fühlte sich wie „Eigenleben" an.
+- **Hauptschalter „Ladeautomatik aktiv" ist jetzt ein Bedienelement** (vorher in
+  der Kategorie Konfiguration/Diagnose versteckt). Er erscheint damit direkt bei
+  den Schaltern (Steuerung), wo der Master hingehört.
+
 ## 1.0.14 – Weiter vorausschauen (36h-Horizont)
 
 - **Planungshorizont von 24 h auf 36 h** erweitert. Vorher fiel – je nach
