@@ -191,7 +191,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Update fehlgeschlagen: {e}")
 
     # --- FAHRPLAN ---
-    def _build_horizon(self, config, now, hours=24):
+    def _build_horizon(self, config, now, hours=36):
         """Baut den Prognosehorizont (Preis/PV/Verbrauch je Stunde) für den Planer."""
         prices = self.data.get("prices", []) or []
         if not prices:

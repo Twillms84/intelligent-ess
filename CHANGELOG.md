@@ -233,3 +233,22 @@ Startpunkt, behebt aber noch nicht die Ursache.
   `akku_tagesende_kwh`, `rest_bilanz_kwh`). Da der Plan ohnehin jede
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
+
+## 1.0.14 – Weiter vorausschauen (36h-Horizont)
+
+- **Planungshorizont von 24 h auf 36 h** erweitert. Vorher fiel – je nach
+  Uhrzeit – die teure Abendspitze des Folgetags aus dem Fenster; der Planer sah
+  kein lohnendes Ladeziel und plante fälschlich „nichts laden". Jetzt wird die
+  morgige Abendspitze erkannt und, wenn die PV sie nicht deckt, günstiges
+  Nachladen (z. B. im Mittagstal) dafür eingeplant.
+- **Kein Sparen eines leeren Akkus mehr:** HOLD wird nur gesetzt, wenn an der
+  Stelle überhaupt Akku-Energie vorhanden ist. Behebt das sinnlose
+  „Akku sparen" bei fast leerem Speicher.
+- **Ladeplanung repariert (Kern-Bug):** Die Lade-Suche brach bisher ab, sobald
+  die EINE teuerste ungedeckte Stunde nicht nachladbar war (z. B. weil direkt
+  davor keine Stunde den nötigen Preisvorsprung hatte). Damit ging die komplette
+  Nacht-Arbitrage verloren – bei realistischem „Lade-Preisvorteil" (≈10 ct)
+  wurde praktisch nie geladen, obwohl der Akku fast leer war. Jetzt werden ALLE
+  offenen Bedarfsstunden nach Preis absteigend als Ladeziel geprüft; günstiges
+  Nachladen in der Nacht für die teuren Stunden am Folgetag wird korrekt
+  eingeplant.

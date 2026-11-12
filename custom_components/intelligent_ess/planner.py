@@ -107,35 +107,53 @@ def plan_dispatch(horizon, usable_now, usable_cap,
             uncovered = [i for i in need_idx if i not in discharge and i not in charge]
             if not uncovered:
                 break
-            # Teuerste noch nicht gedeckte Bedarfsstunde als Ziel.
-            target = max(uncovered, key=lambda i: horizon[i]["price"])
-            target_price = horizon[target]["price"]
-            # Günstigste freie Stunde VOR dem Ziel mit ausreichendem Preisvorteil.
-            candidates = sorted(
-                [i for i in range(target)
-                 if i not in charge and i not in discharge
-                 and horizon[i]["price"] + charge_advantage_eur < target_price],
-                key=lambda i: horizon[i]["price"],
-            )
-            for c in candidates:
-                trial_charge = charge | {c}
-                new_discharge = _select_discharge(horizon, trial_charge, usable_now, usable_cap, charge_per_hour)
-                if len(new_discharge) > len(discharge):
-                    charge = trial_charge
-                    discharge = new_discharge
-                    improved = True
-                    break  # neu bewerten, ob noch Bedarfsstunden offen sind
+            # WICHTIG: Nicht nur die EINE teuerste unüberdeckte Stunde prüfen.
+            # Lässt sich die teuerste nicht laden (z.B. weil davor keine Stunde
+            # günstig genug ist), wären sonst alle übrigen teuren Stunden – und
+            # damit die ganze Nacht-Arbitrage – verloren. Darum ALLE offenen
+            # Bedarfsstunden nach Preis absteigend als Ziel versuchen.
+            for target in sorted(uncovered, key=lambda i: horizon[i]["price"], reverse=True):
+                target_price = horizon[target]["price"]
+                # Günstigste freie Stunde VOR dem Ziel mit ausreichendem Preisvorteil.
+                candidates = sorted(
+                    [i for i in range(target)
+                     if i not in charge and i not in discharge
+                     and horizon[i]["price"] + charge_advantage_eur < target_price],
+                    key=lambda i: horizon[i]["price"],
+                )
+                found = False
+                for c in candidates:
+                    trial_charge = charge | {c}
+                    new_discharge = _select_discharge(horizon, trial_charge, usable_now, usable_cap, charge_per_hour)
+                    if len(new_discharge) > len(discharge):
+                        charge = trial_charge
+                        discharge = new_discharge
+                        improved = True
+                        found = True
+                        break
+                if found:
+                    break  # Plan verändert -> offene Stunden neu bewerten
 
     # 3. HOLD bestimmen: Bedarfsstunde, die NICHT entladen wird und VOR einer
-    #    späteren Entlade-Stunde liegt -> Akku dort sparen. Nur wenn der
-    #    Preisabstand zur teuersten späteren Entlade-Stunde groß genug ist
-    #    (min_spread_eur), sonst lohnt das Sparen nicht.
+    #    späteren Entlade-Stunde liegt -> Akku dort sparen. Nur wenn:
+    #    - der Preisabstand zur teuersten späteren Entlade-Stunde groß genug ist
+    #      (min_spread_eur), sonst lohnt das Sparen nicht, UND
+    #    - an der Stelle überhaupt Akku-Energie vorhanden ist (sonst gibt es
+    #      nichts zu sparen – ein leerer Akku wird nicht "gehalten").
     hold = set()
+    # Verfügbare Energie je Stunde grob mitführen (nur Zuflüsse: Start + PV + Laden).
+    avail = usable_now
     for i, h in enumerate(horizon):
+        avail = min(usable_cap, avail + h["pv_surplus"])
+        if i in charge:
+            avail = min(usable_cap, avail + charge_per_hour)
+
         if i in discharge or i in charge:
             continue
         if h["net_load"] <= EPS:
             continue
+        if avail <= EPS:
+            continue  # leerer Akku -> nichts zu sparen
         later_prices = [horizon[j]["price"] for j in discharge if j > i]
         if not later_prices:
             continue
