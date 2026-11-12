@@ -320,6 +320,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "proj_min_at": proj.get("min_at"),
             "proj_empty_at": proj.get("empty_at"),
             "proj_end_kwh": proj.get("end_kwh"),
+            "proj_trace": proj.get("trace", []),
             "rest_pv_kwh": round(pv_rest, 2),
             "rest_demand_kwh": round(demand_rest, 2),
             "rest_balance_kwh": balance_rest,
@@ -592,6 +593,24 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             f"⚡ Laden: {rec.get('charge_windows') or '—'}",
             f"🔒 Akku sparen: {rec.get('hold_windows') or '—'}",
             f"🔋 Akku nutzen: {rec.get('discharge_windows') or '—'}",
+        ]
+
+        # Akku-Prognose: macht sichtbar, WANN und WIEVIEL genutzt wird.
+        empty_at = rec.get("proj_empty_at")
+        lines += [
+            "",
+            "🔮 Akku-Prognose entlang des Plans:",
+            f"   Tiefpunkt {rec.get('proj_min_kwh', '?')} kWh um {rec.get('proj_min_at') or '—'}"
+            + (f"  |  ⚠️ leer ab {empty_at}" if empty_at else "")
+            + f"  |  Tagesende {rec.get('proj_end_kwh', '?')} kWh",
+        ]
+        trace = rec.get("proj_trace") or []
+        if trace:
+            # Kompakter Stundenstreifen (nächste ~14 h): Uhrzeit = SoC(kWh).
+            strip = "  ".join(f"{t['label']}={t['soc_kwh']:.1f}" for t in trace[:14])
+            lines.append(f"   {strip}")
+
+        lines += [
             "",
             f"➡️ Jetzt: {rec.get('current_reason', data.get('strat_msg', ''))}",
             "",

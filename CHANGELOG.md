@@ -234,6 +234,19 @@ Startpunkt, behebt aber noch nicht die Ursache.
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
 
+## 1.0.16 – Grenzwert inklusive + Akku-Prognose in der Vorschau
+
+- **Lade-Grenzwert jetzt inklusive (≥ statt >):** „10 ct Preisvorteil" lädt jetzt
+  auch für eine genau 10 ct teurere Stunde, nicht erst ab 10,1 ct. Vorher blieben
+  teure Stunden ungenutzt aus dem Netz versorgt, obwohl günstiges Vorladen den
+  Round-Trip genau gedeckt hätte (z. B. Nacht 28 ct → Morgen 38 ct wurde
+  übersprungen). Spart real Geld bei glatten Preisabständen.
+- **Akku-Prognose in der Automatik-Vorschau:** Die Vorschau zeigt jetzt den
+  SoC-Verlauf entlang des Plans – Tiefpunkt (+ Uhrzeit), ob/wann der Akku leer
+  wird, Tagesende-Stand und einen kompakten Stundenstreifen (nächste ~14 h,
+  Uhrzeit = kWh). Damit ist sichtbar, WANN und WIEVIEL der Akku genutzt wird –
+  man kann die Plausibilität des Plans direkt selbst prüfen.
+
 ## 1.0.15 – Echtes „AUS" + Hauptschalter sichtbar
 
 - **„AUS heißt AUS" jetzt wörtlich (Totstellen):** Ist die Automatik aus UND
