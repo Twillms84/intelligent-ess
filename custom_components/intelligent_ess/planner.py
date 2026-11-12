@@ -213,28 +213,44 @@ def _project_soc(horizon, actions, usable_now, usable_cap, charge_per_hour):
     min_kwh = usable_now
     min_at = None
     empty_at = None
+    had_energy = usable_now > EPS
     for i, h in enumerate(horizon):
+        # WICHTIG: Der eingetragene Wert ist der SoC zu BEGINN der Stunde (also am
+        # Label-Zeitpunkt). Beispiel: Wird 23:00–00:00 geladen, zeigt 23:00 noch
+        # den leeren Akku und erst 00:00 die geladene Energie – so, wie es der
+        # Nutzer liest. (Vorher war es der Stand am Stundenende -> wirkte um 1h
+        # zu früh.)
+        start_soc = round(soc, 2)
+        trace.append({"label": h["label"], "soc_kwh": start_soc})
+        if start_soc < min_kwh:
+            min_kwh = start_soc
+            min_at = h["label"]
+        # "Leer ab" meint das Leerlaufen entlang des Plans, nicht den (ggf. schon
+        # leeren) Startzustand: erst melden, nachdem überhaupt Energie da war.
+        if had_energy and empty_at is None and start_soc <= EPS:
+            empty_at = h["label"]
+
+        # Stunde anwenden -> Stand zu Beginn der nächsten Stunde.
         soc = min(usable_cap, soc + h["pv_surplus"])
-        act = actions[i]
+        act = actions[i] if i < len(actions) else "IDLE"
         if act == "CHARGE":
             soc = min(usable_cap, soc + charge_per_hour)
         elif act == "HOLD":
             pass  # Netz versorgt das Haus, Akku unverändert
         else:  # DISCHARGE oder IDLE: Akku deckt den Restbedarf
             soc = max(0.0, soc - h["net_load"])
-        soc = round(soc, 2)
-        trace.append({"label": h["label"], "soc_kwh": soc})
-        if soc < min_kwh:
-            min_kwh = soc
-            min_at = h["label"]
-        if empty_at is None and soc <= EPS:
-            empty_at = h["label"]
+        if soc > EPS:
+            had_energy = True
+
+    end_kwh = round(soc, 2)
+    if end_kwh < min_kwh:
+        min_kwh = end_kwh
     return {
         "trace": trace,
         "min_kwh": round(min_kwh, 2),
         "min_at": min_at,
         "empty_at": empty_at,
-        "end_kwh": trace[-1]["soc_kwh"] if trace else round(usable_now, 2),
+        "end_kwh": end_kwh,
     }
 
 

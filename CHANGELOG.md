@@ -234,6 +234,34 @@ Startpunkt, behebt aber noch nicht die Ursache.
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
 
+## 1.0.17 – Reserve-Schutz + korrekte Prognose-Zeiten
+
+- **Reserve-Schutz (Entladesperre am Mindest-SOC):** Ist der nutzbare Akku am
+  Boden (SoC auf/unter der eingestellten Nacht-Reserve), sperrt die Automatik
+  jetzt von sich aus die Entladung, damit der Wechselrichter den Akku nicht bis
+  zu seiner eigenen Abschalt-SOC leerzieht. Laden bleibt erlaubt. Gilt nur bei
+  aktiver Automatik – bei ausgeschalteter Automatik („AUS heißt AUS") greift die
+  Integration nicht ein.
+- **Prognose-Zeiten korrigiert:** Der SoC-Streifen zeigt jetzt den Stand zu
+  BEGINN jeder Stunde. Wird z. B. 23:00–00:00 geladen, steht 23:00 noch auf dem
+  leeren Akku und erst 00:00 auf der geladenen Energie – vorher war der Wert um
+  eine Stunde zu früh eingetragen. Zudem meint „leer ab …" jetzt das Leerlaufen
+  entlang des Plans, nicht den (ggf. schon leeren) Startzustand.
+- **Stündliches Verbrauchsprofil statt Tagesschnitt:** Fehlte für eine Stunde an
+  einem bestimmten Wochentag noch kein gelernter Wert, fiel der Planer bisher auf
+  den flachen `default_usage`-Tagesschnitt zurück. Jetzt wird zuerst der Schnitt
+  DIESER Stunde über alle Wochentage genutzt – der Verbrauch bleibt also
+  stündlich geformt (Nacht-Tief, Morgen-/Abendspitze). Der flache Wert greift nur
+  noch, wenn für die Stunde gar nichts gelernt wurde. Betrifft Planer-Horizont,
+  Nachtbedarf, Restbedarf und Tagesprofil gleichermaßen.
+- **Batterieladung fließt nicht mehr ins KI-Profil:** Die Verbrauchsberechnung
+  zieht die Batterieladung (`bat_in`) bereits ab – das funktioniert aber nur,
+  wenn der Akku im Energy Dashboard hinterlegt ist. Neu: optionales Feld
+  **„Batterie-Ladesensor (Energie)"** in der Konfiguration. Ist es gesetzt, wird
+  dieser Zähler zusätzlich abgezogen, sodass Netz-/PV-Ladung garantiert nicht als
+  Hausverbrauch gelernt wird – auch ohne vollständiges Energy-Dashboard-Setup.
+  Leer = unverändertes Verhalten.
+
 ## 1.0.16 – Grenzwert inklusive + Akku-Prognose in der Vorschau
 
 - **Lade-Grenzwert jetzt inklusive (≥ statt >):** „10 ct Preisvorteil" lädt jetzt

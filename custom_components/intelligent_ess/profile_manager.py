@@ -72,6 +72,16 @@ class ProfileManager:
         except Exception as e:
             _LOGGER.warning("Fehler beim Auslesen des Energy Dashboards: %s", e)
 
+        # Optionaler, explizit konfigurierter Batterie-Ladesensor (Energie, kWh).
+        # Stellt sicher, dass die BATTERIELADUNG aus dem gelernten Hausverbrauch
+        # herausgerechnet wird (house_kwh zieht bat_in ab) – auch dann, wenn der
+        # Akku nicht oder nicht vollständig im Energy Dashboard hinterlegt ist.
+        extra_bat_in = self.config.get("battery_charge_energy_sensor")
+        if extra_bat_in and extra_bat_in not in sensor_map["bat_in"]:
+            sensor_map["bat_in"].append(extra_bat_in)
+            stat_ids.add(extra_bat_in)
+            _LOGGER.debug("Expliziter Batterie-Ladesensor ergänzt: %s", extra_bat_in)
+
         if not stat_ids:
             _LOGGER.warning("Scanner hat keine Sensoren gefunden. Abbruch.")
             return
@@ -173,12 +183,27 @@ class ProfileManager:
     def get_profile_value(self, dt_obj, default_usage=0.85):
         if not self.learned_profile:
             return float(default_usage)
-            
+
         wd = str(dt_obj.weekday())
         hr = str(dt_obj.hour)
         val = self.learned_profile.get(wd, {}).get(hr)
-        
-        return float(val) if val is not None else float(default_usage)
+        if val is not None:
+            return float(val)
+
+        # Fallback 1: Durchschnitt DIESER Stunde über alle Wochentage. So bleibt
+        # der Verbrauch stündlich geformt (Nacht-Tief, Morgen-/Abendspitze),
+        # statt auf den flachen Tagesschnitt zu kippen, wenn für diesen einen
+        # Wochentag/diese Stunde noch kein Wert gelernt wurde.
+        same_hour = [
+            d[hr] for d in self.learned_profile.values()
+            if isinstance(d, dict) and d.get(hr) is not None
+        ]
+        if same_hour:
+            return float(sum(same_hour) / len(same_hour))
+
+        # Fallback 2: flacher Standardwert (nur falls für diese Stunde gar nichts
+        # gelernt wurde).
+        return float(default_usage)
 
     def get_daily_rest_demand(self, now, default_usage=0.85, solar_start_hour=8):
         total_rest = 0.0

@@ -149,8 +149,19 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 # --- Ebene 2: Automatik aktiv – Entscheidung aus dem Tages-Einsatzplaner ---
                 ca = recommendation.get("current_action", "IDLE")
                 reason = recommendation.get("current_reason", "Normalbetrieb (PV/Batterie)")
+                # Reserve-Schutz: Ist der nutzbare Akku am Boden (SoC auf/unter der
+                # Nacht-Reserve), die Entladung aktiv sperren – sonst zieht der
+                # Wechselrichter im Normalbetrieb bis zu seiner eigenen Abschalt-SOC
+                # weiter und frisst die Reserve auf. Laden bleibt davon unberührt.
+                usable_now = float(gates.get("usable_battery", 0) or 0)
                 if ca == "CHARGE":
                     strat, msg, lock_needed = "LADEN", reason, False
+                elif usable_now <= 0.05:
+                    strat, msg, lock_needed = (
+                        "HOLD",
+                        "Reserve-Schutz: Akku an Mindest-SOC – Entladung gesperrt",
+                        True,
+                    )
                 elif ca == "HOLD":
                     strat, msg, lock_needed = "HOLD", reason, True
                 else:  # DISCHARGE oder IDLE -> Akku normal nutzen, keine Sperre

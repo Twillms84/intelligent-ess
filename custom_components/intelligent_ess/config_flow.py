@@ -27,12 +27,13 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("pv_forecast_today_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Optional("pv_forecast_tomorrow_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
 
+                # Optional: Energiezähler der Batterieladung (kWh). Wird vom
+                # KI-Profil als Verbrauch ABGEZOGEN, damit die Ladung nicht als
+                # Hausverbrauch gelernt wird. Leer = nur Energy-Dashboard-Werte.
+                vol.Optional("battery_charge_energy_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy")),
+
                 # Hardware Steuerung
-                # Netzladen: Switch UND/ODER Number (mind. eins). Beide optional.
-                vol.Optional("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
-                vol.Optional("battery_charge_number"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
-                vol.Optional("battery_charge_number_on", default=0.0): vol.Coerce(float),
-                vol.Optional("battery_charge_number_off", default=0.0): vol.Coerce(float),
+                vol.Required("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
                 vol.Required("wr_limit_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
                 
                 # Parameter
@@ -75,10 +76,7 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema({
                 # --- ALLE VERBLIEBENEN ENTITÄTEN NACHTRÄGLICH BEARBEITBAR ---
-                vol.Optional("battery_charge_switch", default=config.get("battery_charge_switch", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
-                vol.Optional("battery_charge_number", default=config.get("battery_charge_number", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
-                vol.Optional("battery_charge_number_on", default=config.get("battery_charge_number_on", 0.0)): vol.Coerce(float),
-                vol.Optional("battery_charge_number_off", default=config.get("battery_charge_number_off", 0.0)): vol.Coerce(float),
+                vol.Required("battery_charge_switch", default=config.get("battery_charge_switch", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
                 vol.Required("tibber_price_sensor", default=config.get("tibber_price_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required("tibber_export_sensor", default=config.get("tibber_export_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required("battery_soc_sensor", default=config.get("battery_soc_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="battery")),
@@ -86,7 +84,10 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
                 # Einheitliche PV-Forecast Namen (inkl. kleinem Fallback für alte configs)
                 vol.Required("pv_forecast_today_entity", default=config.get("pv_forecast_today_entity", config.get("solar_forecast_sensor", ""))): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Optional("pv_forecast_tomorrow_entity", default=config.get("pv_forecast_tomorrow_entity", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                
+
+                # Optionaler Batterie-Ladesensor (Energie) – vom KI-Profil abgezogen.
+                vol.Optional("battery_charge_energy_sensor", default=config.get("battery_charge_energy_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy")),
+
                 vol.Required("wr_limit_entity", default=config.get("wr_limit_entity", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
                 
                 # --- PARAMETER ---
