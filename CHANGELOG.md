@@ -234,6 +234,30 @@ Startpunkt, behebt aber noch nicht die Ursache.
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
 
+## 1.0.19 – Tages-Vorschau & geschätzte Ersparnis
+
+- **Automatische Tages-Vorschau (morgens/abends):** Die Integration postet jetzt
+  zu konfigurierbaren Zeiten von selbst die Automatik-Vorschau als
+  Benachrichtigung – derselbe Inhalt wie beim manuellen Vorschau-Button (Plan +
+  SoC-Prognose), ohne dass man reinschauen muss. Standard: 07:00 und 18:30, in
+  den Optionen änderbar; Feld leeren = die jeweilige Benachrichtigung aus.
+- **Geschätzte Ersparnis in der Vorschau:** Vorschau und Tages-Benachrichtigung
+  zeigen jetzt die geschätzte Netz-Arbitrage-Ersparnis des Plans: günstig
+  geladene kWh, in den teuersten Stunden genutzt, abzüglich Ladeverlust
+  (~10 % Round-Trip). Ausgewiesen als „~X € (aus Y kWh Netzladung, abzgl. Z kWh
+  Ladeverlust)". PV-/Bestandsenergie fließt bewusst nicht ein – nur der
+  Kaufen-vs-Nutzen-Teil.
+
+## 1.0.18 – Netzladen per Schalter oder Number konfigurierbar
+
+- **Netzladen per Schalter ODER Number – jetzt auch nachträglich konfigurierbar:**
+  Der Config-Flow unterstützte bisher nur den Lade-Schalter; die vom Coordinator
+  längst nutzbare Number-Entität (`battery_charge_number` mit AN-/AUS-Wert) war
+  nirgends einstellbar. Jetzt sind Schalter und Number-Entität inkl. AN-/AUS-Wert
+  sowohl im Setup als auch nachträglich über die Optionen wählbar. Der Schalter
+  ist dabei optional – man kann wahlweise den Schalter, die Number oder beides
+  hinterlegen.
+
 ## 1.0.17 – Reserve-Schutz + korrekte Prognose-Zeiten
 
 - **Reserve-Schutz (Entladesperre am Mindest-SOC):** Ist der nutzbare Akku am
@@ -261,18 +285,6 @@ Startpunkt, behebt aber noch nicht die Ursache.
   dieser Zähler zusätzlich abgezogen, sodass Netz-/PV-Ladung garantiert nicht als
   Hausverbrauch gelernt wird – auch ohne vollständiges Energy-Dashboard-Setup.
   Leer = unverändertes Verhalten.
-- **Netzladen per Schalter ODER Number – jetzt auch nachträglich konfigurierbar:**
-  Der Config-Flow unterstützte bisher nur den Lade-Schalter; die vom Coordinator
-  längst nutzbare Number-Entität (`battery_charge_number` mit AN-/AUS-Wert) war
-  nirgends einstellbar. Jetzt sind Schalter und Number-Entität inkl. AN-/AUS-Wert
-  sowohl im Setup als auch nachträglich über die Optionen wählbar. Der Schalter
-  ist dabei optional – man kann wahlweise den Schalter, die Number oder beides
-  hinterlegen.
-- **Automatische Tages-Vorschau (morgens/abends):** Die Integration postet jetzt
-  zu konfigurierbaren Zeiten von selbst die Automatik-Vorschau als
-  Benachrichtigung – derselbe Inhalt wie beim manuellen Vorschau-Button (Plan +
-  SoC-Prognose), ohne dass man reinschauen muss. Standard: 07:00 und 18:30, in
-  den Optionen änderbar; Feld leeren = die jeweilige Benachrichtigung aus.
 
 ## 1.0.16 – Grenzwert inklusive + Akku-Prognose in der Vorschau
 
