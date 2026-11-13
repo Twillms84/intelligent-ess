@@ -261,6 +261,13 @@ Startpunkt, behebt aber noch nicht die Ursache.
   dieser Zähler zusätzlich abgezogen, sodass Netz-/PV-Ladung garantiert nicht als
   Hausverbrauch gelernt wird – auch ohne vollständiges Energy-Dashboard-Setup.
   Leer = unverändertes Verhalten.
+- **Netzladen per Schalter ODER Number – jetzt auch nachträglich konfigurierbar:**
+  Der Config-Flow unterstützte bisher nur den Lade-Schalter; die vom Coordinator
+  längst nutzbare Number-Entität (`battery_charge_number` mit AN-/AUS-Wert) war
+  nirgends einstellbar. Jetzt sind Schalter und Number-Entität inkl. AN-/AUS-Wert
+  sowohl im Setup als auch nachträglich über die Optionen wählbar. Der Schalter
+  ist dabei optional – man kann wahlweise den Schalter, die Number oder beides
+  hinterlegen.
 
 ## 1.0.16 – Grenzwert inklusive + Akku-Prognose in der Vorschau
 

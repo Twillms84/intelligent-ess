@@ -32,8 +32,13 @@ class IntelligentESSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Hausverbrauch gelernt wird. Leer = nur Energy-Dashboard-Werte.
                 vol.Optional("battery_charge_energy_sensor"): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy")),
 
-                # Hardware Steuerung
-                vol.Required("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
+                # Hardware Steuerung – Netzladen per Schalter ODER Number-Entität.
+                # Beides optional, es sollte aber mindestens eins gesetzt sein.
+                # Bei der Number werden der AN-/AUS-Wert gesetzt (z.B. Ladestrom in A und 0).
+                vol.Optional("battery_charge_switch"): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
+                vol.Optional("battery_charge_number"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
+                vol.Optional("battery_charge_number_on", default=0.0): vol.Coerce(float),
+                vol.Optional("battery_charge_number_off", default=0.0): vol.Coerce(float),
                 vol.Required("wr_limit_entity"): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
                 
                 # Parameter
@@ -76,7 +81,11 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema({
                 # --- ALLE VERBLIEBENEN ENTITÄTEN NACHTRÄGLICH BEARBEITBAR ---
-                vol.Required("battery_charge_switch", default=config.get("battery_charge_switch", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
+                # Netzladen: Schalter ODER Number-Entität (beides nachträglich änderbar).
+                vol.Optional("battery_charge_switch", default=config.get("battery_charge_switch", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
+                vol.Optional("battery_charge_number", default=config.get("battery_charge_number", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
+                vol.Optional("battery_charge_number_on", default=config.get("battery_charge_number_on", 0.0)): vol.Coerce(float),
+                vol.Optional("battery_charge_number_off", default=config.get("battery_charge_number_off", 0.0)): vol.Coerce(float),
                 vol.Required("tibber_price_sensor", default=config.get("tibber_price_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required("tibber_export_sensor", default=config.get("tibber_export_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required("battery_soc_sensor", default=config.get("battery_soc_sensor", "")): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="battery")),
