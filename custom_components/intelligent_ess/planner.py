@@ -118,6 +118,7 @@ def plan_dispatch(horizon, usable_now, usable_cap,
                 candidates = sorted(
                     [i for i in range(target)
                      if i not in charge and i not in discharge
+                     and not horizon[i].get("estimated")  # nie auf Schätzpreisen laden
                      # Grenzwert inklusive (>=): "10 ct Vorteil" soll auch für
                      # eine genau 10 ct teurere Stunde laden, nicht erst ab 10,1 ct.
                      and horizon[i]["price"] + charge_advantage_eur <= target_price + EPS],

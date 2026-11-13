@@ -91,6 +91,21 @@ def get_tibber_prices(hass, config):
                 
     return prices
 
+def get_all_tibber_prices(hass, config):
+    """Alle Preise des Export-Sensors inkl. Vergangenheit (fürs Preisprofil)."""
+    sensor_id = config.get("tibber_export_sensor")
+    state_obj = hass.states.get(sensor_id) if sensor_id else None
+    if not state_obj or state_obj.state in ["unknown", "unavailable"]:
+        return []
+    out = []
+    for e in state_obj.attributes.get("data", []) or []:
+        st = e.get("start_time") or e.get("startsAt")
+        pr = e.get("price_per_kwh") or e.get("total")
+        if st is not None and pr is not None:
+            out.append({"start_time": st, "total": pr})
+    return out
+
+
 def get_ai_price_summary(prices, hours_ahead=12):
     """
     Erstellt eine kompakte Zusammenfassung der Preis-Highlights für die KI.

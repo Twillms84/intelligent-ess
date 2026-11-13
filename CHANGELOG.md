@@ -234,6 +234,22 @@ Startpunkt, behebt aber noch nicht die Ursache.
   Aktualisierung ab dem aktuellen Ladestand neu gerechnet wird, passt sich die
   Prognose laufend an die Realität an.
 
+## 1.0.20 – Weitblick über Mitternacht & gelerntes Preisprofil
+
+- **Weitblick über Mitternacht:** Stunden ohne veröffentlichten Preis (morgen vor
+  ca. 13 Uhr) werden nicht mehr abgeschnitten. Der Planer rechnet sie mit einem
+  geschätzten Preis weiter und sieht damit den Nachtbedarf. Auf geschätzten
+  Preisen wird nie Netzladen eingeplant, nur gespart oder entladen.
+- **Gelerntes Preisprofil je Tagesstunde:** Ein gleitendes Mittel der Preise pro
+  Uhrzeit (gespeichert) liefert die Schätzung. Daraus weiß der Planer, dass es
+  morgens grundsätzlich teurer ist, und lädt schon bei günstigen Mittagspreisen
+  für den teuren Morgen vor.
+- **Neue Tagespreise lösen die Vorschau aus:** Sobald der Preis-Sensor neue Preise
+  (morgen) enthält, wird die Vorschau automatisch als Benachrichtigung gesendet.
+- **Stundenmittel bei 15-Minuten-Preisen** statt des letzten Viertelstundenwerts.
+- **Vorschau:** Hinweis, ab wann Preise nur geschätzt sind; die Ersparnis-Zeile
+  ist immer sichtbar (ohne Netzladung: „0,00 € – keine Netzladung geplant").
+
 ## 1.0.19 – Tages-Vorschau & geschätzte Ersparnis
 
 - **Automatische Tages-Vorschau (morgens/abends):** Die Integration postet jetzt

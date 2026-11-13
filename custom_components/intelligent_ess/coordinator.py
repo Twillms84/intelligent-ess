@@ -11,8 +11,9 @@ from .const import DOMAIN
 from .scheduler import evaluate_manual_windows
 from .planner import plan_dispatch
 # WICHTIG: Hier 'async_get_raw_states' importieren!
-from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_solar_forecast
+from .analytics import update_forecasts_and_finances, async_get_raw_states, get_tibber_prices, get_all_tibber_prices, get_solar_forecast
 from .profile_manager import ProfileManager
+from .price_profile import PriceProfile
 from .logic_engine import ESSLogicEngine
 from .strategy import evaluate_strategy
 
@@ -39,6 +40,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         # 2. Den neuen ProfileManager mit hass und config starten (storage_path ist weg!)
         self.profile_manager = ProfileManager(hass, config)
         
+        self.price_profile = PriceProfile(hass, entry.entry_id)
         self._savings_loaded = False
         self._last_learning_date = None # Merkt sich, wann die KI zuletzt trainiert wurde
         self._update_cycles = 0         # Zähler für das Speichern der Savings
@@ -79,6 +81,12 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             if not current: 
                 return self.data
                 
+            # 3b. Typisches Preisprofil je Stunde lernen (für unbekannte Preise)
+            try:
+                await self.price_profile.async_update(get_all_tibber_prices(self.hass, config))
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.debug("Preisprofil-Update fehlgeschlagen: %s", ex)
+
             # 4. DELTA-BERECHNUNG (Für Analytics/Finanzen)
             deltas = {}
             house_kwh = 0.0
@@ -219,30 +227,51 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         solar = self.data.get("solar_hourly", {}) or {}
         default_usage = float(config.get("default_usage", 0.85))
 
-        # Preise nach lokaler Stunde indizieren (€/kWh).
-        price_map = {}
+        # Preise nach lokaler Stunde indizieren (€/kWh). Bei 15-Minuten-Preisen
+        # wird der Stundenmittelwert gebildet (nicht der letzte Viertelstundenwert).
+        sums = {}
         for p in prices:
             dtp = dt_util.parse_datetime(p.get("start_time")) if p.get("start_time") else None
             if not dtp:
                 continue
             key = dt_util.as_local(dtp).replace(minute=0, second=0, microsecond=0)
             try:
-                price_map[key] = float(p.get("total"))
+                val = float(p.get("total"))
             except (TypeError, ValueError):
                 continue
+            acc = sums.setdefault(key, [0.0, 0])
+            acc[0] += val
+            acc[1] += 1
+        price_map = {k: v[0] / v[1] for k, v in sums.items()}
+        if not price_map:
+            return []
+
+        # Typischer Preis je Tagesstunde (jüngster bekannter Tag) als Schätzung
+        # für Stunden, deren Preis noch nicht veröffentlicht ist (z.B. morgen
+        # vor ~13 Uhr). Geschätzte Stunden dürfen entladen/gespart, aber nie
+        # zum Laden eingeplant werden.
+        typical = {}
+        for k in sorted(price_map):
+            typical[k.hour] = price_map[k]
 
         start = now.replace(minute=0, second=0, microsecond=0)
         horizon = []
         for k in range(hours):
             hdt = start + timedelta(hours=k)
             price = price_map.get(hdt)
+            estimated = False
             if price is None:
-                continue  # ohne Preis keine Planung für diese Stunde
+                lp = self.price_profile.typical(hdt.hour)
+                price = lp if lp is not None else typical.get(hdt.hour)
+                if price is None:
+                    continue
+                estimated = True
             load = float(self.profile_manager.get_profile_value(hdt, default_usage))
             pv = float(solar.get(hdt.strftime("%Y-%m-%d %H:00:00"), 0) or 0)
             horizon.append({
                 "label": hdt.strftime("%H:%M"),
                 "price": price,
+                "estimated": estimated,
                 "net_load": max(0.0, load - pv),
                 "pv_surplus": max(0.0, pv - load),
             })
@@ -340,6 +369,8 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "est_saving_eur": sav.get("saving_eur", 0.0),
             "est_charged_kwh": sav.get("charged_kwh", 0.0),
             "est_loss_kwh": sav.get("loss_kwh", 0.0),
+            # Ab wann Preise nur geschätzt sind (noch nicht veröffentlicht)
+            "est_price_from": next((h["label"] for h in horizon if h.get("estimated")), None),
         }
 
     def apply_recommendation(self):
@@ -626,6 +657,9 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             strip = "  ".join(f"{t['label']}={t['soc_kwh']:.1f}" for t in trace[:14])
             lines.append(f"   {strip}")
 
+        if rec.get("est_price_from"):
+            lines.append(f"   ℹ️ Preise ab {rec['est_price_from']} noch nicht veröffentlicht – dort mit typischen Tagespreisen geschätzt (kein Netzladen auf Schätzpreisen).")
+
         # Geschätzte Ersparnis durch die Netz-Arbitrage des Plans.
         saving = float(rec.get("est_saving_eur", 0.0) or 0.0)
         charged = float(rec.get("est_charged_kwh", 0.0) or 0.0)
@@ -635,6 +669,11 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
                 "",
                 f"💶 Geschätzte Ersparnis: ~{saving:.2f} € "
                 f"(aus {charged:.1f} kWh Netzladung, abzgl. {loss:.1f} kWh Ladeverlust)",
+            ]
+        else:
+            lines += [
+                "",
+                "💶 Geschätzte Ersparnis: 0,00 € (keine Netzladung geplant)",
             ]
 
         lines += [
