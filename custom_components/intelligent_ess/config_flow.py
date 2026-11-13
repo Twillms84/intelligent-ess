@@ -110,5 +110,9 @@ class IntelligentESSOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required("smart_switch_threshold", default=config.get("smart_switch_threshold", -1000)): vol.Coerce(int),
 
                 vol.Optional("conversation_agent", default=config.get("conversation_agent", "conversation.home_assistant")): selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation")),
+
+                # Automatische Tages-Vorschau als Benachrichtigung (morgens/abends).
+                vol.Optional("preview_time_morning", default=config.get("preview_time_morning", "07:00:00")): selector.TimeSelector(),
+                vol.Optional("preview_time_evening", default=config.get("preview_time_evening", "18:30:00")): selector.TimeSelector(),
             })
         )

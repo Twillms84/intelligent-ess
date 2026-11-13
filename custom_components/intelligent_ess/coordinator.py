@@ -311,6 +311,7 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
         balance_rest = round(usable_now + pv_rest - demand_rest, 2)
 
         proj = plan.get("projection", {}) or {}
+        sav = plan.get("savings", {}) or {}
 
         return {
             "current_action": plan["current_action"],
@@ -335,6 +336,10 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             "rest_pv_kwh": round(pv_rest, 2),
             "rest_demand_kwh": round(demand_rest, 2),
             "rest_balance_kwh": balance_rest,
+            # Geschätzte Netz-Arbitrage-Ersparnis des Plans
+            "est_saving_eur": sav.get("saving_eur", 0.0),
+            "est_charged_kwh": sav.get("charged_kwh", 0.0),
+            "est_loss_kwh": sav.get("loss_kwh", 0.0),
         }
 
     def apply_recommendation(self):
@@ -620,6 +625,17 @@ class IntelligentESSCoordinator(DataUpdateCoordinator):
             # Kompakter Stundenstreifen (nächste ~14 h): Uhrzeit = SoC(kWh).
             strip = "  ".join(f"{t['label']}={t['soc_kwh']:.1f}" for t in trace[:14])
             lines.append(f"   {strip}")
+
+        # Geschätzte Ersparnis durch die Netz-Arbitrage des Plans.
+        saving = float(rec.get("est_saving_eur", 0.0) or 0.0)
+        charged = float(rec.get("est_charged_kwh", 0.0) or 0.0)
+        loss = float(rec.get("est_loss_kwh", 0.0) or 0.0)
+        if charged > 0.0:
+            lines += [
+                "",
+                f"💶 Geschätzte Ersparnis: ~{saving:.2f} € "
+                f"(aus {charged:.1f} kWh Netzladung, abzgl. {loss:.1f} kWh Ladeverlust)",
+            ]
 
         lines += [
             "",

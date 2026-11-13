@@ -59,7 +59,9 @@
           "wr_unlock_value": "WR-Limit-Wert im Normalbetrieb",
           "smart_switches": "Smart-Switches (Überschuss-Verbraucher)",
           "smart_switch_threshold": "Einschalt-Schwelle Überschuss (W, negativ)",
-          "conversation_agent": "KI Conversation-Agent"
+          "conversation_agent": "KI Conversation-Agent",
+          "preview_time_morning": "Tages-Vorschau morgens (Uhrzeit, leer = aus)",
+          "preview_time_evening": "Tages-Vorschau abends (Uhrzeit, leer = aus)"
         }
       }
     }

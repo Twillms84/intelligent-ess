@@ -268,6 +268,11 @@ Startpunkt, behebt aber noch nicht die Ursache.
   sowohl im Setup als auch nachträglich über die Optionen wählbar. Der Schalter
   ist dabei optional – man kann wahlweise den Schalter, die Number oder beides
   hinterlegen.
+- **Automatische Tages-Vorschau (morgens/abends):** Die Integration postet jetzt
+  zu konfigurierbaren Zeiten von selbst die Automatik-Vorschau als
+  Benachrichtigung – derselbe Inhalt wie beim manuellen Vorschau-Button (Plan +
+  SoC-Prognose), ohne dass man reinschauen muss. Standard: 07:00 und 18:30, in
+  den Optionen änderbar; Feld leeren = die jeweilige Benachrichtigung aus.
 
 ## 1.0.16 – Grenzwert inklusive + Akku-Prognose in der Vorschau
 

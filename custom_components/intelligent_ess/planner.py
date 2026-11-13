@@ -186,6 +186,9 @@ def plan_dispatch(horizon, usable_now, usable_cap,
     #    So ist sichtbar, wie viel bis Tagesende bleibt und ob/wann er leer wird.
     projection = _project_soc(horizon, actions, usable_now, usable_cap, charge_per_hour)
 
+    # 6. Geschätzte Netz-Arbitrage-Ersparnis des Plans.
+    savings = _estimate_savings(horizon, actions, charge_per_hour)
+
     return {
         "actions": actions,
         "current_action": current_action,
@@ -199,6 +202,50 @@ def plan_dispatch(horizon, usable_now, usable_cap,
             "charge": _windows(horizon, charge),
         },
         "projection": projection,
+        "savings": savings,
+    }
+
+
+# Round-Trip-Wirkungsgrad (Akku + Wechselrichter). ~10 % Ladeverlust.
+ROUNDTRIP_EFFICIENCY = 0.90
+
+
+def _estimate_savings(horizon, actions, charge_per_hour, efficiency=ROUNDTRIP_EFFICIENCY):
+    """Schätzt die Ersparnis der NETZ-Arbitrage des Plans:
+    günstig geladene Energie wird (abzüglich Ladeverlust) in den teuersten
+    Entladestunden genutzt. Ersparnis = vermiedener teurer Netzbezug − Ladekosten.
+
+    Bewusst konservativ/optimistisch beschriftet als "könnte" – die geladene
+    Energie wird den teuersten Entladestunden zugeordnet (Best-Case-Zuordnung).
+    PV-/Bestandsenergie fließt NICHT ein, nur der Netz-Kauf-vs-Nutz-Teil.
+    """
+    charge_idx = [i for i, a in enumerate(actions) if a == "CHARGE"]
+    discharge_idx = [i for i, a in enumerate(actions) if a == "DISCHARGE"]
+    empty = {"saving_eur": 0.0, "charged_kwh": 0.0, "buy_cost_eur": 0.0,
+             "use_value_eur": 0.0, "loss_kwh": 0.0}
+    if not charge_idx or not discharge_idx:
+        return empty
+
+    charged_kwh = len(charge_idx) * charge_per_hour
+    buy_cost = sum(charge_per_hour * horizon[i]["price"] for i in charge_idx)
+
+    # Nach Ladeverlust nutzbare Energie auf die teuersten Entladestunden verteilen.
+    usable = charged_kwh * efficiency
+    remaining = usable
+    use_value = 0.0
+    for i in sorted(discharge_idx, key=lambda j: horizon[j]["price"], reverse=True):
+        if remaining <= EPS:
+            break
+        take = min(remaining, horizon[i]["net_load"])
+        use_value += take * horizon[i]["price"]
+        remaining -= take
+
+    return {
+        "saving_eur": round(use_value - buy_cost, 2),
+        "charged_kwh": round(charged_kwh, 2),
+        "buy_cost_eur": round(buy_cost, 2),
+        "use_value_eur": round(use_value, 2),
+        "loss_kwh": round(charged_kwh * (1.0 - efficiency), 2),
     }
 
 
